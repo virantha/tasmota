@@ -155,37 +155,19 @@ def setSpeed(String speed) {
 void cycleSpeed(){
     speeds = fanSpeeds.keySet() as String[]
 
-    def currSpeed = device.currentValue("speed")
-    def newSpeed = currSpeed
-    // Could probably make this much shorter by using the map
-    switch(currSpeed) {                 
-        case ["off"]:
-            log("Action", "cycleSpeed: Current speed: 0 - Requested speed is: 1", 0)
-            newSpeed = "low"
-            break
+    log("cycleSpeed", speeds, 2)
+    currSpeed = device.currentValue("speed")
+    currSpeedIndex = speeds.findIndexOf { name -> name == currSpeed}
 
-        case ["low"]: 
-            log("Action", "cycleSpeed: Current speed: 1 - Requested speed is: 2", 0)
-            newSpeed = "medium-low"    
-            break
-        
-        case ["medium-low"]: 
-            log("Action", "cycleSpeed: Current speed: 2 - Requested speed is: 3", 0)
-            newSpeed = "medium"
-            break
-
-        case ["medium"]:
-            log("Action", "cycleSpeed: Current speed: 3 - Requested speed is: 4", 0)
-            newSpeed = "high"
-            break
-        
-        case ["high"]:
-            log("Action", "cycleSpeed: Current speed: 4 - Requested speed is: 0", 0)
-            newSpeed = "off"
-            break
-
-    }
+    log("cycleSpeed", "found currSpeed ${currSpeed}, ${currSpeedIndex}", 2)
+    
+    // Now, go to the next index and return that speed
+    newSpeedIndex = (currSpeedIndex + 1) % speeds.size()
+    log("cycleSpeed", "found newSpeedIndex ${newSpeedIndex}", 2)
+    newSpeed = speeds[newSpeedIndex]
+    log("Action", "Requesting new speed ${newSpeed}", 0)
     sendTuyaSpeed(newSpeed)
+    return
 }
 
 /* Main function to translate Hubitat fan levels (off, low, medium, etc) into
