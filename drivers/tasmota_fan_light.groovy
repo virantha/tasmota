@@ -5,6 +5,10 @@ Tasmota Fan with Dimmer driver for Tuya-based wall switches
 Based on original code by Gary Milne's Tasmota Sync drivers (see copyright notice below); the original code appeared
 to have been written for Sonoff fans, and needed to be simplified and changed for Tuya produced dimmer/fan switches.
 
+    * Alexa capability now works; once the device is added to the Alexa skill in the Hubitat app settings:
+        * Say "Alexa, set FAN_NAME to medium" to control the fan
+        * Say "Alexa, turn on FAN_NAME" to turn light on off 
+        * Not sure yet how to get Alexa to set light dimmer level, or if that is even possible without a separate child device
     * Removed fadeSpeed controls (who uses this?)
     * Removed fanSpeed state var and used "speed" string attribute instead as specified by FanControl capability in Hubitat docs
     * Removed the complicated syncTasmota and HubitatResponse differentiators
@@ -42,7 +46,7 @@ import groovy.json.JsonSlurper
 ]
 
 metadata {
-		definition (name: "Tasmota Fan with Dimmer", namespace: "virantha", author: "Virantha Ekanayake", importUrl: "https://raw.githubusercontent.com/virantha/tasmota/main/tasmota_fan_light.groovy", singleThreaded: true )  {
+		definition (name: "Tasmota Fan with Dimmer for Tuya switch", namespace: "virantha", author: "Virantha Ekanayake", importUrl: "https://raw.githubusercontent.com/virantha/tasmota/main/tasmota_fan_light.groovy", singleThreaded: true )  {
         capability "Switch" 
         capability "SwitchLevel"        
         capability "FanControl"
@@ -50,10 +54,10 @@ metadata {
         capability "Configuration"
     
         //Internally named variables that must be lower case
-        attribute "level", "number"
-        attribute "speed", "string"
+        attribute "level", "number"    // Dimmer level
+        attribute "speed", "string"    // Fan speed
         
-		//Driver specific variables where case does not matter.
+		// Driver status message 
         attribute "Status", "string"  
             
         command "fanOff"
@@ -77,23 +81,6 @@ metadata {
         }  
 }
 
-
-//Updated gets run when the "Initialize" button is clicked or when the device driver is selected
-def initialize(){
-	log("Initialize", "Device initialized", 0)
-	//Make sure we are using the right address
-    updateDeviceNetworkID()
-    
-   	//To be safe these are populated with initial values to prevent a null return if they are used as logic flags
-    if ( state.Action == null ) state.Action = "None"
-    if ( state.ActionValue == null ) state.ActionValue = "None"
-    if ( device.currentValue("Status") == null ) updateStatus("Complete")   
-    //if ( device.fanSpeed == null ) sendEvent(name: "fanSpeed", value: 0 )
-    if ( device.speed == null ) sendEvent(name: "speed", value: "--" )
-     
-    //Do a refresh to sync the device driver
-    refresh()
-}
 
 //Turns the Power on
 //Note: POWER and POWER1 are synonymous in Tasmota when issuing commands however STATE only returns "POWER"
@@ -170,6 +157,7 @@ void cycleSpeed(){
 
     def currSpeed = device.currentValue("speed")
     def newSpeed = currSpeed
+    // Could probably make this much shorter by using the map
     switch(currSpeed) {                 
         case ["off"]:
             log("Action", "cycleSpeed: Current speed: 0 - Requested speed is: 1", 0)
@@ -200,7 +188,7 @@ void cycleSpeed(){
     sendTuyaSpeed(newSpeed)
 }
 
-/* Main function to translate Hubitat fan levels (0=off, 1, 2, 3, 4) into
+/* Main function to translate Hubitat fan levels (off, low, medium, etc) into
    Tasmota fan levels (off, 0, 1, 2, 3)
 
 */
@@ -296,34 +284,50 @@ def syncTasmota(body){
     return
 }
 
+//Updated gets run when the "Initialize" button is clicked or when the device driver is selected
+def initialize(){
+	log("Initialize", "Device initialized", 0)
+	//Make sure we are using the right address
+    updateDeviceNetworkID()
+    
+   	//To be safe these are populated with initial values to prevent a null return if they are used as logic flags
+    if ( state.Action == null ) state.Action = "None"
+    if ( state.ActionValue == null ) state.ActionValue = "None"
+    if ( device.currentValue("Status") == null ) updateStatus("Complete")   
+    //if ( device.fanSpeed == null ) sendEvent(name: "fanSpeed", value: 0 )
+    if ( device.speed == null ) sendEvent(name: "speed", value: "--" )
+     
+    //Do a refresh to sync the device driver
+    refresh()
+}
+
 def configure(){
+    configureTasmota()
     log("Configure", "Injecting tasmota Rule 3..", 0)
     log ("Action - tasmotaInjectRule","Injecting Rule3 into Tasmota Host. To verify go to Tasmota console and type: rule 3", 0)
     state.ruleInjection = true
     //Assemble the rule. It is broken up this way for readibility and debugging. 
     rule3 = "ON Power2#State DO backlog0 Var10 %value% ; RuleTimer1 1 ENDON "  // Light power change
     rule3 = rule3 + "ON Power1#State DO backlog0 Var9 %value% ; RuleTimer1 1 ENDON "  // Light power change
-    rule3 = rule3 + "ON StatusSNS#Time DO backlog0 Var12 %value% ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON Dimmer DO backlog0 Var11 %value% ; RuleTimer1 1 ENDON "  // Maybe take out Power2 on and rely on setoption20 and 54?
-    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010016 do backlog0 Var14 1 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010117 do backlog0 Var14 2 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010218 do backlog0 Var14 3 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010319 do backlog0 Var14 4 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
+    rule3 = rule3 + "ON StatusSNS#Time DO backlog0 Var12 %value% ; RuleTimer1 1 ENDON "  // refresh command from hub to initiate manual status update
+    rule3 = rule3 + "ON Dimmer DO backlog0 Var11 %value% ; RuleTimer1 1 ENDON "  // 
+    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010016 do backlog0 Var14 1 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "  // Fan low
+    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010117 do backlog0 Var14 2 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "  // Fan medium-low
+    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010218 do backlog0 Var14 3 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "  // Fan medium
+    rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010319 do backlog0 Var14 4 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "  // Fan high
     
     rule3 = rule3 + "ON Rules#Timer=1 DO Var15 %Var10%,%Var11%,%Var12%,%Var13%,%Var14%,%Var9% ENDON "
     //We have to use single quotes here as there is no way to pass a double quote via a URL. We will replace the single quote with a double quote when we get a response back so it can be handled as JSON.
     rule3 = rule3 + "ON Var15#State\$!%Var16% DO backlog ; Var16 %Var15% ; webquery http://" + settings.HubIP + ":39501 POST {'TSync':'True','Switch1':'%Var10%','Dimmer':'%Var11%','FanSpeed':'%Var14%', 'FanSwitch': '%Var9%', 'time':'%Var12%'} ENDON "
     
-    
     callTasmota("RULE3", rule3)
     
     //and then make sure the rule is turned on.
-    parameters = ["BACKLOG","RULE3 ON; setoption20 0; setoption54 1; webbutton1 Fan; webbutton2 Light"]
+    def parameters = ["BACKLOG","RULE3 ON"]
     //Runs the prepared BACKLOG command after the latest that last command could have finished.
     runInMillis(remainingTime() + 50, "callTasmota", [data:parameters])
 }
     
-
 
 // Try to get all the Tuya setup in, the very first time Tasmota has been flashed onto these devices
 // to get the firmware to understand it's a Tuya-based device with fan and dimmer controls.  You may have
@@ -331,27 +335,50 @@ def configure(){
 // I have not tested this function extensively
 def configureTasmota() {
     // First, make sure baud rate is set to 115200 and all capabilities are enabled
-	log ("configureTasmota", "Waiting for baud rate.. 5 sec", 0)
-    callTasmota("BACKLOG", "SetOption97 1")
-    pauseExecution(10000)
-	log ("configureTasmota", "Now enabling fan/dimmer functions", 0)
-    callTasmota("BACKLOG", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
+	//log ("configureTasmota", "Now enabling fan/dimmer functions", 0)
+    //callTasmota("BACKLOG", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
+    //pauseExecution(2000)
+    callTasmota("module", "54")
+    pauseExecution(1000)
+	log ("configureTasmota", "Waiting for baud rate ... 1 sec", 0)
+    callTasmota("SetOption97", "1")
     pauseExecution(2000)
-	log ("configureTasmota", "Now setting dimmer range", 0)
-    callTasmota("BACKLOG", "DimmerRange 100,1000; ledtable 0")
-    pauseExecution(2000)
+
+	log ("configureTasmota", "Waiting for dimmer/fan functions.. ", 0)
+    callTasmota("BACKLOG0", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
+	log ("configureTasmota", "Waiting for reboot", 0)
+    pauseExecution(5000)
+    waitUntilPing()
+    //callTasmota("TuyaMCU", "11,1")
+    //callTasmota("TuyaMCU", "21,10")
+    //callTasmota("TuyaMCU", "12,9")
+	log ("configureTasmota", "resending for dimmer/fan functions.. 10 sec", 0)
+    callTasmota("BACKLOG0", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
+	log ("configureTasmota", "Waiting for reboot", 0)
+    pauseExecution(5000)
+    waitUntilPing()
+
+	log ("configureTasmota", "Waiting for options .. 10 sec", 0)
+    callTasmota("BACKLOG", "setoption20 0; setoption54 1; webbutton1 Fan; webbutton2 Light; DimmerRange 100,1000; ledtable 0")
+    pauseExecution(3000)
+    waitUntilPing()
+    off()
+    fanOff()
+    //if (device.currentValue("switch") != "on") off()
+    //if (device.currentValue("speed") != "off") fanOff()
 }
+
 //Installed gets run when the device driver is selected and saved
 def installed(){
 	log ("Installed", "Installed with settings: ${settings}", 0)
-    configureTasmota()
 }
 
 //Updated gets run when the "Save Preferences" button is clicked
 def updated(){
 	log ("Update", "Settings: ${settings}", 0)
 	initialize()
-    configureTasmota()
+	log ("configureTasmota", "Now setting dimmer range", 0)
+    callTasmota("DeviceName", device.displayName)
 }
 
 //Uninstalled gets run when called from a parent app???
@@ -382,7 +409,9 @@ def watchdog(){
         log ("watchdog", "Last command was a BACKLOG. Initiating STATE refresh for current settings.", 0)
         //Calculate when the current operations should be finished and schedule the "STATE" command to run after them.
         def parameters = ["STATE",""]
-        runInMillis(remainingTime() + 500, "callTasmota", [data:parameters])
+        //runInMillis(remainingTime() + 500, "callTasmota", [data:parameters])
+        runInMillis(remainingTime() + 500, "refresh", [data:[]])
+
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
         }
     }
@@ -689,13 +718,7 @@ return s
 }
 
 
-
-
-//*********************************************************************************************************************************************************************
-//******
-//****** STANDARD: Start of Supporting functions
-//******
-//*********************************************************************************************************************************************************************
+//****** Supporting functions
 
 private String convertIPtoHex(ipAddress) { 
     String hex = ipAddress.tokenize( '.' ).collect {  String.format( '%02X', it.toInteger() ) }.join()
@@ -730,6 +753,17 @@ private updateDeviceNetworkID() {
     catch (e){
     	log("Save", "Error updating Device Network ID: ${e}", -1)
      	}
+}
+
+// Waits until at least 5 pings are successful
+def waitUntilPing() {
+    def success = 0
+    while (success < 5) {
+        hubitat.helper.NetworkUtils.PingData pingData = hubitat.helper.NetworkUtils.ping(settings.destIP, 5)
+        success = pingData["packetsReceived"]
+        log("waitUntilPing", "Got successfull ping count of ${success}", 0)
+        pauseExecution(1000)
+    }
 }
 
 //Cleans up Tasmota command URL by substituting for illegal characters
