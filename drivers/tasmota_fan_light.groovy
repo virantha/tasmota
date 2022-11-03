@@ -1,13 +1,25 @@
 /**
 
-Tasmota Fan with Dimmer
+Tasmota Fan with Dimmer driver for Tuya-based wall switches
 
-Based on original code by Gary Milne's Tasmota Sync drivers (see copyright notice below).
+Based on original code by Gary Milne's Tasmota Sync drivers (see copyright notice below); the original code appeared
+to have been written for Sonoff fans, and needed to be simplified and changed for Tuya produced dimmer/fan switches.
 
     * Removed fadeSpeed controls (who uses this?)
+    * Removed fanSpeed state var and used "speed" string attribute instead as specified by FanControl capability in Hubitat docs
     * Removed the complicated syncTasmota and HubitatResponse differentiators
-        * Now, all requests from hub are acknowledged by the rules, and handled in syncTasmota
+        * Now, all requests to the hub are acknowledged by the rules, and handled in syncTasmota, in addition to locally at-switch
+          initiated changes
+    * speed is now limited to 4 levels supported by the Tuya fan, which is constrained in the device page using an ENUM
+    * Configure capability is used now 
+    * Used setoption20 and setoption54 to make sure dimmer turns on when level is adjusted (instead of having to send power commands)
+    * Misc
+        * Fixed formatting
+        * Took out overly verbose comments
 
+
+*  Original attribution:
+* 
 *  Tasmota Sync Fan with Dimmer
 *
 *  Copyright 2022 Gary J. Milne
@@ -16,282 +28,99 @@ Based on original code by Gary Milne's Tasmota Sync drivers (see copyright notic
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation.
 *
-*  Gary Milne - Aug 29, 2022
 *
 **/
 
+import groovy.transform.Field
 import groovy.json.JsonSlurper
+@Field static final Map fanSpeeds = [
+    "off": -1,
+    "low": 0,
+    "medium-low": 1,
+    "medium": 2,
+    "high": 3,
+]
 
 metadata {
-		definition (name: "Tasmota Sync - Fan with Dimmer", namespace: "garyjmilne", author: "Gary J. Milne", importUrl: "https://raw.githubusercontent.com/GaryMilne/Hubitat-Tasmota/main/Fan_with_Dimmer.groovy", singleThreaded: true )  {
+		definition (name: "Tasmota Fan with Dimmer", namespace: "virantha", author: "Virantha Ekanayake", importUrl: "https://raw.githubusercontent.com/virantha/tasmota/main/tasmota_fan_light.groovy", singleThreaded: true )  {
         capability "Switch" 
         capability "SwitchLevel"        
         capability "FanControl"
         capability "Refresh"
+        capability "Configuration"
     
         //Internally named variables that must be lower case
         attribute "level", "number"
         attribute "speed", "string"
-        attribute "fanSpeed", "string"
         
 		//Driver specific variables where case does not matter.
-        attribute "Fade", "string"
-        attribute "FadeSpeed", "string"  
         attribute "Status", "string"  
             
         command "fanOff"
         command "brighter"
         command "dimmer"
-        command "fadeSpeed", [ [name:"Duration in seconds for a dimmer transation to complete (Persistent). FadeSpeed attribute will be 2X this number.*", type: "STRING", description: "The time in seconds (0 - 20) for any transition operation to complete. fadeSpeed will display as 2X this value as Tasmota uses 0.5 seconds intervals. Note: Fade must be turned on for this setting to have any effect."] ]
-        command "fadeToggle"
         command "initialize"
-        command "tasmotaInjectRule"
-        command "tasmotaCustomCommand", [ [name:"Command*", type: "STRING", description: "A single word command to be issued such as COLOR, CT, DIMMER etc."], [name:"Parameter", type: "STRING", description: "An optional single parameter that accompanies the command such as FFFFFFFF, 350, 75 etc."] ]
         command "toggle"
+        command "setSpeed", [[name:"speed*", type: "ENUM", description: "speed", constraints: ["off","low", "medium-low", "medium", "high"] ] ]
 
-        //command "test"
-        
 	}
     section("Configure the Inputs"){
 			input name: "destIP", type: "text", title: bold(dodgerBlue("Tasmota Device IP Address")), description: italic("The IP address of the Tasmota device."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
             input name: "HubIP", type: "text", title: bold(dodgerBlue("Hubitat Hub IP Address")), description: italic("The Hubitat Hub Address. Used by Tasmota rules to send HTTP responses."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
             input name: "timeout", type: "number", title: bold("Timeout for Tasmota reponse."), description: italic("Time in ms after which a Transaction is closed by the watchdog and subsequent responses will be ignored. Default 5000ms."), defaultValue: "5000", required:true, displayDuringSetup: false
-            input name: "debounce", type: "number", title: bold("Debounce Interval for Tasmota Sync."), description: italic("The period in ms from command invocation during which a Tasmota Sync request will be ignored. Default 7000ms."), defaultValue: "7000", required:true, displayDuringSetup: false
             input name: "logging_level", type: "number", title: bold("Level of detail displayed in log"), description: italic("Enter log level 0-3. (Default is 0.)"), defaultValue: "0", required:true, displayDuringSetup: false            
 	        input name: "loggingEnhancements", type: "enum", title: bold("Logging Enhancements."), description: italic("Allows log entries for this device to be enhanced with HTML tags for increased increased readability. (Default - All enhancements.)"),
                 options: [ [0:" No enhancements."],[1:" Prepend log events with device name."],[2:" Enable HTML tags on logged events for this device."],[3:" Prepend log events with device name and enable HTML tags." ] ], defaultValue: 3, required:true
-    		input name: "pollFrequency", type: "enum", title: bold("Poll Frequency. Polling not required if using Tasmota Sync on Tasmota 11."), description: italic("The time between Hubitat initiated synchronisation of values with Tasmota. Tasmota is considered authoritative (Default - 0 (Never) )"),
-                options: [ [0:" Never"],[60:" 1 minute"],[300:" 5 minutes"],[600:"10 minutes"],[900:"15 minutes"],[1800:"30 minutes"],[3600:" 1 hour"],[10800:" 3 hours"] ], defaultValue: 0
             input name: "destPort", type: "text", title: bold("Port"), description: italic("The Tasmota webserver port. Only required if not at the default value of 80."), defaultValue: "80", required:false, displayDuringSetup: true
             input name: "username", type: "text", title: bold("Tasmota Username"), description: italic("Tasmota username is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
           	input name: "password", type: "password", title: bold("Tasmota Password"), description: italic("Tasmota password is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
         }  
 }
 
-//Function used for quickly testing out logic and cleaning up.
-def test(){
-    //state.remove("starttime")
-}
-
-//*********************************************************************************************************************************************
-//******
-//****** Start of All functions that have any uniqueness to them across all of the TSync driver base.
-//****** This allows for easier updates to core functions
-//******
-//*******************************************************************************************************************************************
-
-//*********************************************************************************************************************************************************************
-//******
-//****** Start of UNIQUE standard functions
-//******
-//*********************************************************************************************************************************************************************
 
 //Updated gets run when the "Initialize" button is clicked or when the device driver is selected
 def initialize(){
 	log("Initialize", "Device initialized", 0)
-    //Cancel any existing scheduled tasks for this device
-    unschedule("poll")
 	//Make sure we are using the right address
     updateDeviceNetworkID()
     
-    log("Initialize", "pollFrequency value: ${settings.pollFrequency} seconds.",0)
-    
-    //Test to make sure the entered frequency is in range
-    switch(settings.pollFrequency) { 
-        case "0": unschedule("poll") ; break
-        case "60": runEvery1Minute("poll") ; break
-        case "300": runEvery5Minutes("poll") ; break
-        case "600": runEvery10Minutes("poll") ; break
-        case "900": runEvery15Minutes("poll") ; break
-        case "1800": runEvery30Minutes("poll") ; break
-        case "3600": runEvery1Hours("poll") ; break
-        case "10800": runEvery3Hours("poll") ; break
-    } 
    	//To be safe these are populated with initial values to prevent a null return if they are used as logic flags
     if ( state.Action == null ) state.Action = "None"
     if ( state.ActionValue == null ) state.ActionValue = "None"
     if ( device.currentValue("Status") == null ) updateStatus("Complete")   
-    if ( device.fanSpeed == null ) sendEvent(name: "fanSpeed", value: 0 )
+    //if ( device.fanSpeed == null ) sendEvent(name: "fanSpeed", value: 0 )
     if ( device.speed == null ) sendEvent(name: "speed", value: "--" )
      
     //Do a refresh to sync the device driver
     refresh()
 }
 
-//*********************************************************************************************************************************************************************
-//******
-//****** End of UNIQUE standard functions
-//******
-//*********************************************************************************************************************************************************************
-
-
-
-//*********************************************************************************************************************************************************************
-//******
-//****** UNIQUE: Start of Power related functions. These may be UNIQUE across all Tasmota Sync drivers
-//******
-//*********************************************************************************************************************************************************************
-
 //Turns the Power on
 //Note: POWER and POWER1 are synonymous in Tasmota when issuing commands however STATE only returns "POWER"
 def on() {
     log("Action", "Turn on switch", 0)
     callTasmota("POWER2", "on")
-    sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
+    //sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
     }
         
 //Turns the switch off
 def off() {
 	log("Action", "Turn off switch", 0)
     callTasmota("POWER2", "off")
-    sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
-	}
-
-//Turns the fan off.
-def fanOff() {
-    log("Action", "Turn fan off", 0)
-    sendTuyaSpeed("off")
-    }
-
-//Cycles the fan to the next position in the cycle Off, Low, Medium, High, Off.
-//This is a function name expected to be present when the FanControl capability is enabled.
-void cycleSpeed(){
-    def currSpeed = device.currentValue("fanSpeed")
-    def newSpeed = currSpeed
-    switch(currSpeed) {                 
-        case ["off", "0"]:
-            log("Action", "cycleSpeed: Current speed: 0 - Requested speed is: 1", 0)
-            newSpeed = "low"
-            break
-
-        case ["low", "1"]: 
-            log("Action", "cycleSpeed: Current speed: 1 - Requested speed is: 2", 0)
-            newSpeed = "medium-low"    
-            break
-        
-        case ["medium-low", "2"]: 
-            log("Action", "cycleSpeed: Current speed: 2 - Requested speed is: 3", 0)
-            newSpeed = "medium"
-            break
-
-        case ["medium", "3"]:
-            log("Action", "cycleSpeed: Current speed: 3 - Requested speed is: 4", 0)
-            newSpeed = "medium-high"
-            break
-        
-        case ["medium-high", "4"]:
-            log("Action", "cycleSpeed: Current speed: 4 - Requested speed is: 0", 0)
-            newSpeed = "off"
-            break
-
-    }
-    sendTuyaSpeed(newSpeed)
+    //sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
 }
 
-/* Main function to translate Hubitat fan levels (0=off, 1, 2, 3, 4) into
-   Tasmota fan levels (off, 0, 1, 2, 3)
-
-*/
-def sendTuyaSpeed(String speed) {
-  
-    def currSpeed = device.currentValue("fanSpeed")
-    def newSpeed = currSpeed
-    switch(speed) {
-        case ["off"]:
-            newSpeed = -1
-            break
-        case ["on", "low"]:
-            newSpeed = 0
-            break
-        case ["medium-low"]:
-            newSpeed = 1
-            break
-        case ["medium"]:
-            newSpeed = 2
-            break
-        case ["medium-high", "high"]:
-            newSpeed = 3
-            break
-        case ["auto"]:
-            log("sendTuyaSpeed", "Current speed is: ${currSpeed}", 0)
-            return
-            break
-    }
-    sendEvent(name: "fanSpeed", value: newSpeed+1)
-    setfanSpeedAttribute(newSpeed+1)
-    if (newSpeed > -1) {
-        callTasmota("TUYASEND4", "3,${newSpeed}")
-    } else {
-        // Turn off fan
-        // Could also use callTasmota("POWER1", "off")
-        callTasmota("TUYASEND", "1,0")
-    }
+//Toggles the device state
+void toggle() {
+    log("Action", "Toggle ", 0)
+    if (device.currentValue("switch") == "on" ) off()
+    else on()
 }
 
-//Sets the fan to the Tasmota FANSPEED corresponding to the predetermined english names within the setSpeed() tile.
-//This is a function name expected to be present when the FanControl capability is enabled.
-def setSpeed(String speed) {
-    log("Action", "setSpeed: Requested speed is: ${speed}", 0)
-    sendTuyaSpeed(speed)
-}
-
-//device.speed is not declared in the capabilities documentation however I have come across it in other drivers, specifically the ABC controller which I use presonally.
-//So I have added support for this attribute for the widest compatibility
-void setfanSpeedAttribute(speed){
-    log("setfanSpeedAttribute", "Current fan speed is: ${speed}", 2)
-     switch(speed) {                 
-        case 0:
-            sendEvent(name: "speed", value: "off" )
-            break
-
-        case 1: 
-            sendEvent(name: "speed", value: "low" )
-            break
-        
-        case 2: 
-            sendEvent(name: "speed", value: "medium-low" )
-            break
-
-        case 3:
-            sendEvent(name: "speed", value: "medium" )
-            break
-
-         case 4:
-            sendEvent(name: "speed", value: "high" )
-            break
-
-     }
-}
-
-//Toggles the Fade function off and on
-void fadeToggle() {
-    log ("Action - fadeToggle", "Toggle Fade", 0)
-    if ( device.currentValue("Fade").equalsIgnoreCase("on") ){
-        newstate = "off"
-        }
-    else
-        {
-        newstate = "on"
-        }
-    callTasmota("FADE", newstate )
-    log ("fadeToggle", "Exiting", 1)
-}
-
-//This FadeSpeed function uses the Speed command which is a persistent value (as opposed to SPEED2)
-void fadeSpeed(fadeSpeed) {
-    log ("Action - fadeSpeed", "Change fadeSpeed to ${fadeSpeed}", 0)
-    //Test to see if the fadeSpeed is a valid integer
-    try {
-        fadeSpeed = fadeSpeed.toInteger()
-        if (fadeSpeed > 20) {fadeSpeed = 20}
-        if (fadeSpeed < 0) {fadeSpeed = 0}
-        }
-    catch (Exception e) {
-        log ("Fade", "Error: Invalid fadeSpeed. Should be a numeric value between 0 and 20.", -1)
-        return
-        } 
-    callTasmota("Speed", fadeSpeed * 2 )
-    log ("fadeSpeed", "Exiting", 1)
+//Dimmer control for only Dimmer value.
+def setLevel(Dimmer) {
+	log ("Action - setLevel1", "Request Dimmer: ${Dimmer}%", 0)
+	callTasmota("Dimmer", Dimmer)
 }
 
 //This Brighter function increments the brightness of the dimmer setting.
@@ -309,219 +138,110 @@ void dimmer() {
 }
 
 
-//*********************************************************************************************************************************************************************
-//******
-//****** End of Power related functions
-//******
-//*********************************************************************************************************************************************************************
+//Dimmer control for dimmer and fade values.
+def setLevel(Dimmer, duration) {
+    if (duration < 0) duration = 0
+    if (duration > 40) duration = 40
+    if (duration > 0 ) duration = Math.round(duration * 2)    //Tasmota uses 0.5 second increments so double it for Tasmota Speed value
+    delay = duration * 10 + 5    //Delay is in 1/10 of a second so we make it slightly longer than the actual fade delay.
+	log ("Action - setLevel2", "Request Dimmer: ${Dimmer}% ;  SPEED2: ${duration}", 0)
+    command = "Rule3 OFF ; Dimmer ${Dimmer} ; SPEED2 ${duration} ; DELAY ${delay} ; Rule3 ON"
+	callTasmota("BACKLOG", command)
+}
 
 
+//Turns the fan off.
+def fanOff() {
+    log("Action", "Turn fan off", 0)
+    sendTuyaSpeed("off")
+}
 
-//**************************************************************************************************************************************************************************
-//******
-//****** UNIQUE: Start of Background task run by Hubitat
-//******
-//**************************************************************************************************************************************************************************
+//Sets the fan to the Tasmota FANSPEED corresponding to the predetermined english names within the setSpeed() tile.
+//This is a function name expected to be present when the FanControl capability is enabled.
+def setSpeed(String speed) {
+    log("Action", "setSpeed: Requested speed is: ${speed}", 0)
+    sendTuyaSpeed(speed)
+}
 
-//Sync the UI to the actual status of the device. The results come back to the parse function.
-//This function is called from the button press and automatically via the polling method
-//In drivers with SENSOR data this function is a little different.
+//Cycles the fan to the next position in the cycle Off, Low, Medium, High, Off.
+//This is a function name expected to be present when the FanControl capability is enabled.
+void cycleSpeed(){
+    speeds = fanSpeeds.keySet() as String[]
+
+    def currSpeed = device.currentValue("speed")
+    def newSpeed = currSpeed
+    switch(currSpeed) {                 
+        case ["off"]:
+            log("Action", "cycleSpeed: Current speed: 0 - Requested speed is: 1", 0)
+            newSpeed = "low"
+            break
+
+        case ["low"]: 
+            log("Action", "cycleSpeed: Current speed: 1 - Requested speed is: 2", 0)
+            newSpeed = "medium-low"    
+            break
+        
+        case ["medium-low"]: 
+            log("Action", "cycleSpeed: Current speed: 2 - Requested speed is: 3", 0)
+            newSpeed = "medium"
+            break
+
+        case ["medium"]:
+            log("Action", "cycleSpeed: Current speed: 3 - Requested speed is: 4", 0)
+            newSpeed = "high"
+            break
+        
+        case ["high"]:
+            log("Action", "cycleSpeed: Current speed: 4 - Requested speed is: 0", 0)
+            newSpeed = "off"
+            break
+
+    }
+    sendTuyaSpeed(newSpeed)
+}
+
+/* Main function to translate Hubitat fan levels (0=off, 1, 2, 3, 4) into
+   Tasmota fan levels (off, 0, 1, 2, 3)
+
+*/
+def sendTuyaSpeed(String speed) {
+  
+    def currSpeed = device.currentValue("fanSpeed")
+    def newSpeed = currSpeed
+    
+    newSpeed = fanSpeeds[speed]
+
+    if (newSpeed >= 0) {
+        tuyaSendFanSpeed(newSpeed)
+    } else if (newSpeed==-1){
+        // Turn off fan
+        tuyaSendFanOff()
+    } else {
+        log("sendTuyaSpeed", "Unknown speed ${newSpeed}", 0)
+    }
+}
+
+private void tuyaSendFanOff() {
+    // Could also use callTasmota("POWER1", "off")
+    callTasmota("TUYASEND", "1,0")
+}
+private void tuyaSendFanSpeed(fanspeed) {
+    callTasmota("TUYASEND4", "3,${fanspeed}")
+}
+
+
+//Sync the UI to the actual status of the device manually. The results come back to the parse function.
 def refresh(){
 		log ("Action", "Refresh started....", 0)
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-		callTasmota("STATE", "" )
-    }
+		//callTasmota("STATE", "" )
+		callTasmota("STATUS", "0" )
+}
 
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** End of Background tasks
-//******
-//*****************************************************************************************************************************************************************************************************
-
-
-
-//******************************************************************************************************************************************************************************************************
-//******
-//****** Start of main program section where most of the work gets done. There are 3 main functions, parse which receives all LAN input and directs it to either hubitatResponse or syncTasmota for processing.
-//****** The functions callTasmota() and parse() are IDENTICAL in all Tasmota Sync drivers and are found toward the end of the file.
-//****** The functions syncTasmota, hubitatResponse() and tasmotaInjectRule() are UNIQUE in all Tasmota Sync drivers and are located immediately below.
-//******
-//******************************************************************************************************************************************************************************************************
-
-
-//*************************************************************************************************************************************************************************************************************
-//******
-//****** UNIQUE: The only things that get routed here are expected responses to commands issued through Hubitat.
-//******
-//*************************************************************************************************************************************************************************************************************
-
-def hubitatResponse(body){
-    log ("hubitatResponse", "Entering, data received", 1)
-    log ("hubitatResponse", "Raw data is: ${body}.", 2)
-    
-    //Get the command and value that was submitted to the callTasmota function
-    Action = state.Action
-    ActionValue = state.ActionValue    
-    
-    log ("hubitatResponse", "Flags are Action:${state.Action}  ActionValue:${state.ActionValue}", 2)
-    
-    //Test to see if we got a warning from Tasmota
-    tasmotaWarning = false
-    if (body.contains("WARNING") == true ) {
-        tasmotaWarning = true            
-        log ("hubitatResponse","A warning was received from Tasmota. Review the message '${body}' and make appropriate changes.", -1)
-        updateStatus("Complete:Failed")
-    }
-    
-    //Now parse into JSON to extract data.
-    body = parseJson(body)
-    
-    //Check to make sure we have some data to act on.
-    if (body !=null){
-        //If the response contains the WiFi info then we extract the RSSI value for display as a state variable.
-        if (body.WIFI != null ){
-            def wifi = body.WIFI
-            def RSSI = wifi.RSSI
-            state.RSSI = RSSI
-            log ("hubitatResponse", "RSSI: ${state.RSSI}", 2)
-            }
-        
-        switch(Action.toUpperCase()) { 
-   			case ["POWER"]:
-        		log("hubitatResponse","Command: Power ${body.POWER}", 1)
-                if (ActionValue.toUpperCase() == body.POWER){
-                    log ("hubitatResponse","Power state applied successfully", 0)
-                    updateStatus("Complete:Success")
-                    //We got the response we were looking for so we can actually change the state of the switch in the UI.
-					//If the switch is turned off then the power statistics (if applicable) must be zero. However, if TSync is enabled then it will fire a Sync anyway.																															   
-                    sendEvent(name: "switch", value: ActionValue.toLowerCase(), descriptionText: "The switch has been turned ${ActionValue.toLowerCase()}", isStateChange: true )
-                    if ( ActionValue.toLowerCase() == "on" ) state.lastOn = new Date().format('MM-dd HH:mm:ss')
-                    if ( ActionValue.toLowerCase() == "off" ) state.lastOff = new Date().format('MM-dd HH:mm:ss')
-                  }
-            else {
-                log("hubitatResponse","Power state failed to apply", -1)
-                updateStatus("Complete:Fail")
-                }
-            	break
-
-             case ["DIMMER"]:  //Usually referred to as Level in Hubitat
-                log("hubitatResponse", "Command: Dimmer ${body.DIMMER}", 1)
-                //We may use dimmer + or dimmer - to increment or decrement the actual dimmer brightness.
-                //So we need to handle a non numeric condition
-                try { if (ActionValue?.toInteger() == true) isInteger == true }
-                catch (e) {isInteger == False}
-                
-                if ( isInteger == true) {
-                    if ( ActionValue.toInteger() == body.DIMMER.toInteger() ){
-                	    log ("hubitatResponse", "Dimmer applied successfully", 0)
-                        updateStatus("Complete:Success")
-                        sendEvent(name: "level", value: ActionValue, displayed:true, isStateChange: true)
-                        sendEvent(name: "switch", value: "on", displayed:true)
-                        } 
-                    else {
-                        updateStatus("Complete:Fail")                
-                        log("hubitatResponse","Dimmer state failed to apply", -1)
-                        }
-                    }
-                else {
-                    //ActionValue was non numeric (Dimmer + or Dimmer -) so we have to assume the new value was a correct increment or decrement.
-                    log ("hubitatResponse", "Dimmer ${ActionValue} applied successfully", 0)
-                    updateStatus("Complete:Success")
-                    sendEvent(name: "level", value: body.DIMMER.toInteger(), displayed:true, isStateChange: true)
-                    sendEvent(name: "switch", value: "on", displayed:true)
-                } 
-                break
-            
-            case ["FADE"]:  //This refers to the fade. 
-                log("hubitatResponse", "Command FADE: ${body.FADE}", 1)
-                if (ActionValue.toUpperCase() == body.FADE){
-                    log ("hubitatResponse","Fade applied successfully: ${body.FADE.toLowerCase()}", 0)
-                    sendEvent(name:"Fade", value: "${body.FADE.toLowerCase()}", displayed:true, isStateChange: true)
-                    updateStatus("Complete:Success")
-                } 
-            else 
-                {
-                log("hubitatResponse","Fade failed to apply", -1)
-                updateStatus("Complete:Fail")
-                }
-            	break
-                
-            case ["SPEED"]:  //This refers to the Speed of the fade. Larger numbers are longer.
-                log("hubitatResponse", "Command Speed: ${body.SPEED}", 1)
-                if (ActionValue.toInteger() == body.SPEED.toInteger() ){
-                	log ("hubitatResponse","Fade Speed applied successfully: ${body.SPEED}", 0)
-                    sendEvent(name:"FadeSpeed", value: "${body.SPEED}", displayed:true, isStateChange: true)
-                    updateStatus("Complete:Success")
-                } 
-            else 
-                {
-                log("hubitatResponse","Fade Speed failed to apply", -1)
-                updateStatus("Complete:Fail")
-                }
-            	break
-            
-            case ["FANSPEED"]:
-        		log("hubitatResponse","Command: FANSPEED ${body.FANSPEED}", 1)
-                if (ActionValue.toInteger() == body.FANSPEED ){
-                log ("hubitatResponse","Fanspeed applied successfully", 0)
-                    updateStatus("Complete:Success")
-                    //We got the response we were looking for so we can actually change the state of the switch in the UI.
-                    sendEvent(name: "fanSpeed", value: body.FANSPEED)
-                    setfanSpeedAttribute(body.FANSPEED)
-                } 
-            else {
-                log("hubitatResponse","Power state failed to apply", -1)
-                updateStatus("Complete:Fail")
-                }
-            	break
-                
-            case ["BACKLOG"]:
-                //Backlog commands do not return anything useful to indicate success or failure.  A typical response might be [WARNING:Enable weblog 2 if response expected]. But the bulb may be in weblog 4 and get a different response.
-            	//If we come back to this spot we know a BACKLOG command was issued and SOMETHING came back so we know the command at least got to the device.
-                log ("hubitatResponse","Backlog Command acknowledged.", 0)
-                updateStatus("Complete:Backlogged")
-            	break
-                
-            case ["STATE"]:
-                //Synchronise the UI to the values we get from the device via the STATE command. Typical response looks like this
-                //{"Time":"2022-04-12T06:20:36","Uptime":"0T10:05:13","UptimeSec":36313,"Heap":26,"SleepMode":"Dynamic","Sleep":50,"LoadAvg":19,"MqttCount":0,"Power":"OFF","Dimmer":68,"Color":"00000000AD",
-                //"HSBColor":"248,84,0","White":68,"CT":500,"Channel":[0,0,0,0,68],"Scheme":0,"Fade":"OFF","Speed":20,"LedTable":"ON","Wifi":{"AP":1,"SSId":"5441","BSSId":"A0:04:60:95:0E:62","Channel":6,"Mode":"11n",
-                //"RSSI":100,"Signal":-47,"LinkCount":1,"Downtime":"0T00:00:06"}}
-                log ("hubitatResponse","Setting device handler values to match device.", 0)
-                if (body?.FANSPEED) sendEvent(name: "fanSpeed", value: body.FANSPEED, displayed:false)
-                if (body?.DIMMER) sendEvent(name: "level", value: body.DIMMER.toInteger(), descriptionText: "The dimmer has been set to ${body.DIMMER.toInteger()}", isStateChange: true )
-                if (body?.SWITCH1) sendEvent(name: "switch", value: body.POWER.toLowerCase(), descriptionText: "The switch has been turned ${body.POWER.toLowerCase()}", isStateChange: true )
-                if (body?.FADE) sendEvent(name: "Fade", value: body.FADE, descriptionText: "Fade has been set to ${body.FADE}", isStateChange: true )
-                if (body?.SPEED) sendEvent(name: "Speed", value: body.SPEED, descriptionText: "Fade speed has been set to ${body.SPEED}", isStateChange: true )
-                updateStatus("Complete:Success")
-            	break            
-            
-            default:
-                //Response to any other undefined commands will come here.  This is most likely because of a custom command
-            	//If we come back to this spot we know a command was issued and SOMETHING came back so we know the command at least got to the device.
-                log ("hubitatResponse","Command acknowledged.", 0)
-                updateStatus("Complete")
-            	break
-        	}
-        }
-    log ("hubitatResponse","Closing Transaction", 1)
-    state.inTransaction = false
-   	log ("hubitatResponse","Exiting", 1)
-   }
-
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** End of hubitatResponse()
-//******
-//*****************************************************************************************************************************************************************************************************
-
-
-//*************************************************************************************************************************************************************************************************************
-//******
-//****** UNIQUE: The only things that get routed here are expected responses to commands issued through Hubitat.
-//******
-//*************************************************************************************************************************************************************************************************************
-
+// Main callback when the Tasmota device does a HTTP request with a status update.  This function
+// is responsible for keeping the device driver status in sync with the actual wall-switch, whether
+// the switch was updated through this driver with a "callTasmota" web request, or whether the wall-switch
+// buttons were physically pushed by a person.
 def syncTasmota(body){
     log ("syncTasmota", "Data received: ${body}", 0)
     //This is a special case that only happens when the rules are being injected
@@ -532,135 +252,59 @@ def syncTasmota(body){
         log ("syncTasmota","Closing Transaction", 2)
         updateStatus("Complete:Success")
         return
-        } 
-    
-    //Let's see how long it's been since the last command initiated by Hubitat.  If it is less than X seconds we will ignore this sync request as it is an "echo" of the Hubitat request. 
-    elapsed = now() - state.startTime
-   
-    if (elapsed > settings.debounce){
-        log ("syncTasmota", "Tasmota Sync request processing.", 1)
-        state.Action = "Tasmota"
-        state.ActionValue = "Sync"
-        state.lastTasmotaSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-        
-        //Now parse into JSON to extract data.
-        body = parseJson(body)
-        
-        //Preset the values for when the %vars% are empty
-        switch1 = -1 ; dimmer = -1 ; fade = "SAME" ; fadespeed = -1 ; speed = -1 ; fanSwitch = -1;
-        
-        //A value of '' for any of these means no update. Probably because the device has restarted and the %vars% have not repopulated. This is expected.
-        if (body?.SWITCH1 != '') { switch1 = body?.SWITCH1 ; log ("syncTasmota","Switch is: ${switch1}", 2) }
-        if (body?.FANSPEED != '') { fanSpeed = body?.FANSPEED.toInteger() ; log ("syncTasmota","fanSpeed is: ${fanSpeed}", 2) }
-        if (body?.FANSWITCH != '') { fanSwitch = body?.FANSWITCH ; log ("syncTasmota","fanSwitch is: ${fanSwitch}, and fanSpeed is: ${fanSpeed}", 2) }
-        if (body?.DIMMER != '') { dimmer = body?.DIMMER.toInteger() ; log ("syncTasmota","Dimmer is: ${dimmer}", 2) }
-        if (body?.FADE != '') { fade = body?.FADE.toInteger() ; log ("syncTasmota","Fade is: ${fade}", 2) }
-        if (body?.SPEED != '') { speed = body?.SPEED.toInteger() ; log ("syncTasmota","FadeSpeed is: ${speed}", 2) }
-        
-        //Now apply any changes that have been found. In Tasmota, "power" is the switch state unless referring to sensor data.
-        //Only changes will get logged so we can report everything. 
-        if ( switch1.toInteger() == 0 ) sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
-        if ( switch1.toInteger() == 1 ) sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
-        
-        //Send fanSpeed event if we have new data. Ignore anything less than 0.
-        // If fanSwitch is 0 then need to make sure fanSpeed is set to zero (turned off)
-        if ( fanSwitch.toInteger() == 0 && fanSpeed > 0) {
-            log ("syncTasmota", "turning off fan", 2)
-            fanSpeed = 0
-        } 
-        if ( fanSpeed >= 0 ) {
-            sendEvent(name: "fanSpeed", value: fanSpeed, descriptionText: "fanSpeed was set to ${fanSpeed}.")
-            setfanSpeedAttribute(fanSpeed)
-        }
-        
-        //Send fade and fadespeed events if we have new data. Ignore anything less than 0.
-        if ( fade != "SAME" ) sendEvent(name: "Fade", value: "${fade}")
-        if ( speed >= 0 ) sendEvent(name: "FadeSpeed", value: "${speed}")
-        //Send dimmer events if we have new data. Ignore anything less than 0.
-        if ( dimmer >= 0 ) sendEvent(name: "level", value: dimmer, unit: "Percent" )
-        
-        updateStatus ("Complete:Tasmota Sync")
-        log ("syncTasmota", "Sync completed. Exiting", 0)
-        return
-        }
-    else {
-        log ("syncTasmota", "Tasmota Sync request debounced. Exiting.", 0)
-        log ("syncTasmota", "Elapsed time of ${elapsed}ms is less than debounce limit of ${settings.debounce}. This can be adjusted in settings.", 1)
-    }
-}
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** End of syncTasmota()
-//******
-//*****************************************************************************************************************************************************************************************************
-
-
-//*************************************************************************************************************************************************************************************************************
-//******
-//****** UNIQUE: The only things that gets routed here are responses to requests for Sensor updates. Not used in this particular driver.
-//******
-//*************************************************************************************************************************************************************************************************************
-
-def statusResponse(body){
-    log ("statusResponse", "Entering, data Received.", 1)
-    log ("statusResponse", "Raw data is: ${body}.", 2)
+    } 
+    log ("syncTasmota", "Tasmota Sync request processing.", 1)
+    state.Action = "Tasmota"
+    state.ActionValue = "Sync"
+    state.lastTasmotaSync = new Date().format('yyyy-MM-dd HH:mm:ss')
     
     //Now parse into JSON to extract data.
     body = parseJson(body)
     
-    //STATUS 1 - 12 calls return data fields about Tasmota.  STATUS 8 returns sensor data and is probably the most important to Hubitat.
-    if ( (state.ActionValue == "8") && (body.STATUSSNS.ENERGY != null) )
-        {
-        state.lastSensorData = new Date().format('yyyy-MM-dd HH:mm:ss')
-        
-        //Update the Power\Watts information.
-        if (settings.switchType.toInteger() >= 1){
-            if (body?.STATUSSNS?.ENERGY?.POWER != null ) {
-                log("updateData", "Watts is: ${body.STATUSSNS.ENERGY.POWER}" , 2)
-                sendEvent(name: "power", value: body.STATUSSNS.ENERGY.POWER ) 
-                }
-        }
-            
-        //Do not send Current and Voltage events if reduced reporting has been selected    
-        if (settings.switchType.toInteger() == 2){
-            if (body?.STATUSSNS?.ENERGY?.CURRENT != null ) {  log("updateData", "Current is: ${body.STATUSSNS.ENERGY.CURRENT}" , 2)  ;  sendEvent(name: "current", value: body.STATUSSNS.ENERGY.CURRENT ) }
-            if (body?.STATUSSNS?.ENERGY?.VOLTAGE != null ) {  log("updateData", "Voltage is: ${body.STATUSSNS.ENERGY.VOLTAGE}" , 2)  ;  sendEvent(name: "voltage", value: body.STATUSSNS.ENERGY.VOLTAGE ) }  
-        }
-                
-        log("statusResponse","STATUS 8 - ENERGY values processed.", 0)
-        updateStatus("Complete:Success")
-        }
-    else    
-        {
-        log("statusResponse","STATUS 8 - NO ENERGY data found.", 0)
-        updateStatus("Complete:No Data")
-        }
-    log ("statusResponse","Closing Transaction", 1)
-    state.inTransaction = false
-   	log ("statusResponse","Exiting", 0)
-   }
+    //Preset the values for when the %vars% are empty
+    switch1 = -1 ; dimmer = -1 ; fade = "SAME" ; fadespeed = -1 ; speed = -1 ; fanSwitch = -1;
+    
+    //A value of '' for any of these means no update. Probably because the device has restarted and the %vars% have not repopulated. This is expected.
+    if (body?.SWITCH1 != '') { switch1 = body?.SWITCH1 ; log ("syncTasmota","Switch is: ${switch1}", 2) }
+    if (body?.FANSPEED != '') { fanSpeed = body?.FANSPEED.toInteger() ; log ("syncTasmota","fanSpeed is: ${fanSpeed}", 2) }
+    if (body?.FANSWITCH != '') { fanSwitch = body?.FANSWITCH ; log ("syncTasmota","fanSwitch is: ${fanSwitch}, and fanSpeed is: ${fanSpeed}", 2) }
+    if (body?.DIMMER != '') { dimmer = body?.DIMMER.toInteger() ; log ("syncTasmota","Dimmer is: ${dimmer}", 2) }
+    
+    //Now apply any changes that have been found. In Tasmota, "power" is the switch state unless referring to sensor data.
+    //Only changes will get logged so we can report everything. 
+    if ( switch1.toInteger() == 0 ) sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
+    if ( switch1.toInteger() == 1 ) sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
+    
+    //Send fanSpeed event if we have new data. Ignore anything less than 0.
+    // If fanSwitch is 0 then need to make sure fanSpeed is set to zero (turned off)
+    if ( fanSwitch.toInteger() == 0 && fanSpeed > 0) {
+        log ("syncTasmota", "turning off fan", 2)
+        fanSpeed =-1
+        sendEvent(name: "speed", value: "off", descriptionText: "speed was set to off.")
+    } 
+    if ( fanSpeed >= 0 ) {
+        speed = fanSpeeds.find{ it.value==fanSpeed-1 }?.key
+        log("syncTasmota", "Setting Fan speed ${fanSpeed} = ${speed}", 2)
+        sendEvent(name: "speed", value: speed, descriptionText: "speed was set to ${speed}.")
+    }
+    
+    //Send dimmer events if we have new data. Ignore anything less than 0.
+    if ( dimmer >= 0 ) sendEvent(name: "level", value: dimmer, unit: "Percent" )
+    
+    updateStatus ("Complete:Tasmota Sync")
+    log ("syncTasmota", "Sync completed. Exiting", 0)
+    return
+}
 
-//******** End of statusResponse() ***************************************************************************************************************************************************************************
-
-
-//*************************************************************************************************************************************************************************************************************
-//******
-//****** UNIQUE: Installs the rule onto the Tasmota device and enables it.
-//	    	 Note that the variables are initially empty and the bulb has go through a change in Power, Color, Dimmer, CT, Fade and Speed before the values are all populated.
-// 	         This function is very unique on a driver by driver basis as the triggers are all different.
-//******
-//*************************************************************************************************************************************************************************************************************
-
-def tasmotaInjectRule(){
+def configure(){
+    log("Configure", "Injecting tasmota Rule 3..", 0)
     log ("Action - tasmotaInjectRule","Injecting Rule3 into Tasmota Host. To verify go to Tasmota console and type: rule 3", 0)
     state.ruleInjection = true
     //Assemble the rule. It is broken up this way for readibility and debugging. 
     rule3 = "ON Power2#State DO backlog0 Var10 %value% ; RuleTimer1 1 ENDON "  // Light power change
     rule3 = rule3 + "ON Power1#State DO backlog0 Var9 %value% ; RuleTimer1 1 ENDON "  // Light power change
-    rule3 = rule3 + "ON Dimmer DO backlog0 Var11 %value% ; Power2 on ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON Fade#Data DO backlog Var12 %value% ; RuleTimer1 1 ENDON "
-    rule3 = rule3 + "ON Speed#Data DO backlog0 Var13 %value% ; RuleTimer1 1 ENDON "
-    //rule3 = rule3 + "ON FanSpeed#Data DO backlog0 Var14 %value% ; RuleTimer1 1 ENDON "
+    rule3 = rule3 + "ON StatusSNS#Time DO backlog0 Var12 %value% ; RuleTimer1 1 ENDON "
+    rule3 = rule3 + "ON Dimmer DO backlog0 Var11 %value% ; RuleTimer1 1 ENDON "  // Maybe take out Power2 on and rely on setoption20 and 54?
     rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010016 do backlog0 Var14 1 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
     rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010117 do backlog0 Var14 2 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
     rule3 = rule3 + "ON TuyaReceived#Data=55AA03070005030400010218 do backlog0 Var14 3 ; tuyasend 1,1 ; RuleTimer1 1 ENDON "
@@ -668,71 +312,46 @@ def tasmotaInjectRule(){
     
     rule3 = rule3 + "ON Rules#Timer=1 DO Var15 %Var10%,%Var11%,%Var12%,%Var13%,%Var14%,%Var9% ENDON "
     //We have to use single quotes here as there is no way to pass a double quote via a URL. We will replace the single quote with a double quote when we get a response back so it can be handled as JSON.
-    rule3 = rule3 + "ON Var15#State\$!%Var16% DO backlog ; Var16 %Var15% ; webquery http://" + settings.HubIP + ":39501 POST {'TSync':'True','Switch1':'%Var10%','Dimmer':'%Var11%','Fade':'%Var12%','Speed':'%Var13%','FanSpeed':'%Var14%', 'FanSwitch': '%Var9%'} ENDON "
+    rule3 = rule3 + "ON Var15#State\$!%Var16% DO backlog ; Var16 %Var15% ; webquery http://" + settings.HubIP + ":39501 POST {'TSync':'True','Switch1':'%Var10%','Dimmer':'%Var11%','FanSpeed':'%Var14%', 'FanSwitch': '%Var9%', 'time':'%Var12%'} ENDON "
     
-    //Now install the rule onto Tasmota
+    
     callTasmota("RULE3", rule3)
     
     //and then make sure the rule is turned on.
-    command = "RULE3 ON"
-    def parameters = ["BACKLOG","${command}"]
+    parameters = ["BACKLOG","RULE3 ON; setoption20 0; setoption54 1; webbutton1 Fan; webbutton2 Light"]
     //Runs the prepared BACKLOG command after the latest that last command could have finished.
     runInMillis(remainingTime() + 50, "callTasmota", [data:parameters])
-    }
+}
     
-//*********************************************************************************************************************************************************************
-//******
-//****** End of main program section
-//******
-//*********************************************************************************************************************************************************************
 
 
-//*********************************************************************************************************************************************************************
-//*********************************************************************************************************************************************************************
-//**********************                              *****************************************************************************************************************
-//**********************  END OF UNIQUE FUNCTIONS     *****************************************************************************************************************
-//**********************  EVERYTHING BELOW HERE IS    *****************************************************************************************************************
-//**********************  COMMON CODE FOR ALL TSYNC   *****************************************************************************************************************
-//**********************  FAMILY OF DRIVERS           *****************************************************************************************************************
-//**********************                              *****************************************************************************************************************
-//*********************************************************************************************************************************************************************
-//*********************************************************************************************************************************************************************
-
-/*
-*  CORE - IDENTICAL - CHANGELOG
-*  All changes to code in the CORE section will be commented here. Changes to the UNIQUE section that are made across all drivers will also be commented here.
-*  Version 0.91 - Internal version
-*  Version 0.92E - Global rename of some variables
-*  Version 0.93A - Enhancement of Tasmota rules to provide more granular data and less MEM usage. Although in the unique section this change was made across all drivers.
-*  Version 0.93B - Enhancement of Tasmota rules to use only a single MEM register.
-*  Version 0.94C - Tasmota rules moved to all VAR use, no MEM. Driver handles non-populated TSync fields.
-*  Version 0.95A - Updates to parse to handle inTransaction logic and reject lan messages after timeout window has closed.
-*  Version 0.95B - Added toggle function and state variables for lastOff and lastOn
-*  Version 0.96A - Tweaks to formatting of logging.
-*  Version 0.96B - Added logging enhancements with HTML tags. Added blue highlight to key fields in preferences.
-*  Version 0.96C - Added handling for Tasmota "WARNING" message that occurs when authentication fails and possibly other scenarios.
-*  Version 0.97 - Added option in settings to disable use of HTML enhancements in logging. These do not show correctly on a secondary hub in a two+ hub environment. This option allows them to be disabled.
-*  Version 0.98.0 - Changed versioning to comply with Semantic Versioning standards (https://semver.org/). Moved CORE changelog to beginning of CORE section.
-*  Version 0.98.1 - Added a "warning" category and label to the logging section.
-*  Version 0.98.2 - Added a "tooltip" function into the HTML area. Not yet being used.
-*
-*/
-
-//*********************************************************************************************************************************************************************
-//******
-//****** STANDARD: Start of System Required Function
-//******
-//*********************************************************************************************************************************************************************
-
+// Try to get all the Tuya setup in, the very first time Tasmota has been flashed onto these devices
+// to get the firmware to understand it's a Tuya-based device with fan and dimmer controls.  You may have
+// to just run these commands manually in the console of the Tasmota web-ui of each individual switch, as 
+// I have not tested this function extensively
+def configureTasmota() {
+    // First, make sure baud rate is set to 115200 and all capabilities are enabled
+	log ("configureTasmota", "Waiting for baud rate.. 5 sec", 0)
+    callTasmota("BACKLOG", "SetOption97 1")
+    pauseExecution(10000)
+	log ("configureTasmota", "Now enabling fan/dimmer functions", 0)
+    callTasmota("BACKLOG", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
+    pauseExecution(2000)
+	log ("configureTasmota", "Now setting dimmer range", 0)
+    callTasmota("BACKLOG", "DimmerRange 100,1000; ledtable 0")
+    pauseExecution(2000)
+}
 //Installed gets run when the device driver is selected and saved
 def installed(){
 	log ("Installed", "Installed with settings: ${settings}", 0)
+    configureTasmota()
 }
 
 //Updated gets run when the "Save Preferences" button is clicked
 def updated(){
 	log ("Update", "Settings: ${settings}", 0)
 	initialize()
+    configureTasmota()
 }
 
 //Uninstalled gets run when called from a parent app???
@@ -740,30 +359,9 @@ def uninstalled() {
 	log ("Uninstall", "Device uninstalled", 0)
 }
 
-//********************************************************************************************************************************************************************
-//******
-//****** End of System Required functions
-//******
-//********************************************************************************************************************************************************************
-
-
-//**************************************************************************************************************************************************************************
-//******
-//****** STANDARD: Start of Background task run by Hubitat - Is executed by the polling function which syncs the state of the device with the UI. The device being considered authoritative.
-//****** All of these functions are IDENTICAL across all Tasmota Sync drivers
-//******
-//**************************************************************************************************************************************************************************
-
-//Runs on a frequency determined by the user. It will synchronize the Hubitat values to those of the actual device.
-//This function is only called internally and is used to schedule future refreshes. Polling is not require with Tasmota 11 and Rule3 installed.
-def poll(nextPoll){
-	    log ("Poll", "Polling started.. ", 0)
-        refresh()
-        log ("Poll", "Polling ended. Next poll in ${settings.pollFrequency} seconds.", 0)
-	}
-
-//This function is called settings.timeout milliseconds after the the transaction started.
-//If the transaction has timed then it resets out and resets any temporary values.
+// Handle command timeouts (not sure why we can't just do this in callTasmota?)
+// This function is called settings.timeout milliseconds after the the transaction started.
+// If the transaction has timed then it resets out and resets any temporary values.
 def watchdog(){
     if (state.inTransaction == false ) {
         log ("watchdog", "All normal. Not in a transaction.", 2)
@@ -789,27 +387,32 @@ def watchdog(){
         }
     }
 
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** End of Background tasks
-//******
-//*****************************************************************************************************************************************************************************************************
+def lanSent(hubitat.device.HubResponse hubResponse) {
+    // This is called back when callTasmota lanmessage is sent out
+    // Can use this as verification as command sent, but we need to wait for syncTasmota to update status of device
+    def status = hubResponse.status
+    def json = hubResponse.json
 
+    log("Lan Sent", json, 2)
+    //Get the command and value that was submitted to the callTasmota function
+    Action = state.Action
+    ActionValue = state.ActionValue    
+    
+    log ("lanSent", "Flags are Action:${state.Action}  ActionValue:${state.ActionValue}", 2)
+    
+    //Test to see if we got a warning from Tasmota
+    if (status as Integer != 200) {
+        log ("lanSent","A warning was received from Tasmota. Review the message '${json}' and make appropriate changes.", -1)
+        updateStatus("Complete:Failed")
+    }
+    if (state.inTransaction) {
+        log("lanSent", "Finished transaction", 1)
+    }
+    state.inTransaction = false
+    return
+}
 
-//******************************************************************************************************************************************************************************************************
-//******
-//****** Start of main program section where most of the work gets done. There are 3 main functions, parse which receives all LAN input and directs it to either hubitatResponse or syncTasmota for processing.
-//****** The functions callTasmota() and parse() are IDENTICAL in all Tasmota Sync drivers and are located in this section.
-//****** The functions syncTasmota, hubitatResponse() and tasmotaInjectRule() are UNIQUE and can be found near the beginning of the file.
-//******
-//*************************************************************************************************************************************************************************************************************
-
-//*************************************************************************************************************************************************************************************************************
-//******
-//****** STANDARD: This function places a call to the Tasmota device using HTTP via a hubCommand. A successful call will result in an HTTP response to the parse() function. The HUB IP address must be configured.
-//******
-//*************************************************************************************************************************************************************************************************************
-
+// Send a command to the wall-swich
 def callTasmota(action, receivedvalue){
 	log ("callTasmota", "Sending command: ${action} ${receivedvalue}", 0)
     //Update the status to show that we are sending info to the device
@@ -835,13 +438,19 @@ def callTasmota(action, receivedvalue){
     log ("callTasmota", "Path: ${newPath}", 3)
     try {
             def hubAction = new hubitat.device.HubAction(
-                method: "GET",
-                path: newPath,
-                headers: [HOST: "${settings.destIP}:${settings.destPort}"]
-                )
+                [
+                    method: "GET",
+                    path: newPath,
+                    headers: [HOST: "${settings.destIP}:${settings.destPort}"]
+                ], 
+                "${settings.destIP}:${settings.destPort}", // dni
+                [
+                    callback: lanSent
+                ]
+            )
             log ("callTasmota", "hubaction: ${hubAction}", 3)
             sendHubCommand(hubAction)
-        updateStatus("Sent:${action} ${receivedvalue}")
+            updateStatus("Sent:${action} ${receivedvalue}")
         }
         catch (Exception e) {
             log ("calltasmota", "Exception $e in $hubAction", -1)
@@ -857,7 +466,6 @@ def callTasmota(action, receivedvalue){
 //****** When the changes originate on Tasmota they will be routed to syncTasmota for hubitatResponse() and statusResponse() for SENSOR data if applicable
 //****** Note: A Hubitat initiated change will cause RULE3 on Tasmota to fire and ALSO send a TSync request. This is expected..... 
 //****** Note: .....if they are received during a transaction (inTransaction==true) then they are ignored as they are just an "echo" of the command sent from Hubitat.
-//****** Note: .....These are ignored when within the debounce window.
 //******
 //*****************************************************************************************************************************************************************************************************
 
@@ -875,6 +483,7 @@ def parse(LanMessage){
 	body = body?.replace("'","\"") 
 	//Convert all the contents to upper case for consistency
 	body = body?.toUpperCase()
+
 	//Search body for the word STATUS while it is still in string form
 	StatusSync = false
 	if (body.contains("STATUS")==true ) StatusSync = true
@@ -890,44 +499,15 @@ def parse(LanMessage){
 		log ("parse","Exit to syncTasmota()", 1)
 		syncTasmota(body)
 		return
-		}
+    }
         
-    //For every other response we need to check to see if we are in a transaction or not. 
-	//If inTransaction == true then we need to processs it. If inTransaction == false then the response was received after the timeout window has closed.
-    //If this happens we will acknowledge it and discard the data. This does not apply to TSync requests as they can occur at any time.
-    if (state.inTransaction == true ) {  
-        //This is for an responses that contain the word STATUS which means they are probably responses to STATUS 1 - 12 requests.
-        if (StatusSync == true){
-            log ("parse","Exit to statusResponse()", 1)
-            statusResponse(body) 
-            return    
-        }
-        //If we were not routed to syncTasmota or statusResponse then everything else goes to main hubitatResponse function
-        log ("parse","Exit to hubitatResponse()", 1)
-        hubitatResponse(body) 
-		}    
-    else{
-       log ("parse","Data has been received outside the timeout window and has been ignored - exiting. (Increase the timeout window if this happens frequently.)", 0)
-		}
 }
 
-//*****************************************************************************************************************************************************************************************************
-//****** End of parse()
-//*****************************************************************************************************************************************************************************************************
-
-
-
-//*********************************************************************************************************************************************************************
-//******
-//****** Start of logging related functions. These functions are IDENTICAL in all Tasmota Sync drivers
-//******
-//*********************************************************************************************************************************************************************
-
-//Simple function to send event message and log them.
+// Helper function to send event message and log them.
 def updateStatus(status){
     log ("updateStatus", status, 1)
     sendEvent(name: "Status", value: status )
-    }
+}
 
 //*****************************************************************************************************************************************************************************************************
 //******
@@ -1109,265 +689,6 @@ return s
 }
 
 
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** End of HTML enhancement functions.
-//******
-//*****************************************************************************************************************************************************************************************************
-
-
-//*********************************************************************************************************************************************************************
-//******
-//****** End of logging related functions. These functions are IDENTICAL in all Tasmota Sync drivers
-//******
-//*********************************************************************************************************************************************************************
-
-
-//*********************************************************************************************************************************************************************
-//******
-//******  STANDARD: Start of Color related functions - Typical Hubitat functions with adjustments for calls to Tasmota
-//******
-//*********************************************************************************************************************************************************************
-
-//Note: When issuing multiple commands we use backlog.  To reduce feedback we turn off rule3 at the beginning and turn it back on again after the end.
-//If only one argument provided it is CT
-def setColorTemperature(kelvin){
-    log("Action - setColor1", "Request CT Kelvin: ${kelvin}" , 0)
-    callTasmota("CT", kelvinToMireds(kelvin) )
-    }
-
-//If only two arguments provided it is CT and Dimmer (Hubitat uses the word Dimmer but I consistently use Dimmer.
-def setColorTemperature(kelvin, Dimmer){
-    if (Dimmer < 0) Dimmer = 0
-    if (Dimmer > 100) Dimmer = 100
-    log("Action - setColor2", "Request CT: ${kelvin} ; Dimmer: ${Dimmer}" , 0)
-    mireds = kelvinToMireds(kelvin)
-    command = "Rule3 OFF ; CT ${mireds} ; Dimmer ${Dimmer} ; DELAY ${10} ; Rule3 ON"
-    callTasmota("BACKLOG", command )
-    }
-
-//If 3 arguments are provided or only CT and duration are provided it will come here. In the latter case Dimmer will be null.
-def setColorTemperature(kelvin, Dimmer, duration){
-    log("Action - setColorTemp3", "Request CT: ${kelvin} ; DIMMER: ${Dimmer} ; SPEED2: ${duration}", 0)
-    if (duration < 0) duration = 0
-    if (duration > 40) duration = 40
-    if (duration > 0 ) duration = Math.round(duration * 2)    //Tasmota uses 0.5 second increments so double it for Tasmota Speed value
-    mireds = kelvinToMireds(kelvin)
-    
-    delay = duration * 10 + 5    //Delay is in 1/10 of a second so we make it slightly longer than the actual fade delay.
-    
-    if (Dimmer != null) {
-        if (Dimmer < 0) Dimmer = 0
-        if (Dimmer > 100) Dimmer = 100
-        command = "Rule3 OFF ; CT ${mireds} ; Dimmer ${Dimmer} ; SPEED2 ${duration} ; DELAY ${delay} ; Rule3 ON"
-        }
-    else{
-        command = "Rule3 OFF ; CT ${mireds} ; SPEED2 ${duration} ; DELAY ${delay} ; Rule3 ON"
-        }
-    callTasmota("BACKLOG", command )
-    }
-
-//Dimmer control for only Dimmer value.
-def setLevel(Dimmer) {
-	log ("Action - setLevel1", "Request Dimmer: ${Dimmer}%", 0)
-	callTasmota("Dimmer", Dimmer)
-	}
-
-//Dimmer control for dimmer and fade values.
-def setLevel(Dimmer, duration) {
-    if (duration < 0) duration = 0
-    if (duration > 40) duration = 40
-    if (duration > 0 ) duration = Math.round(duration * 2)    //Tasmota uses 0.5 second increments so double it for Tasmota Speed value
-    delay = duration * 10 + 5    //Delay is in 1/10 of a second so we make it slightly longer than the actual fade delay.
-	log ("Action - setLevel2", "Request Dimmer: ${Dimmer}% ;  SPEED2: ${duration}", 0)
-    command = "Rule3 OFF ; Dimmer ${Dimmer} ; SPEED2 ${duration} ; DELAY ${delay} ; Rule3 ON"
-	callTasmota("BACKLOG", command)
-	}
-
-def setHue(float value){
-    log("Action - SetHue", "Request Hue: ${value}", 0)
-    def color = device.currentValue('color')
-    log("SetHue", "Current Color is: ${color}", 2)
-    def map = isColor(color)
-    desiredColor = map.Color.substring(0, 6)
-    
-    log("SetHue", "Current HEX Color is: #${desiredColor}", 3)
-    
-    //Now convert HEX to RGB
-    RGB = hubitat.helper.ColorUtils.hexToRGB("#${desiredColor}")
-    HSV = hubitat.helper.ColorUtils.rgbToHSV(RGB)
-    HSV[0] = value
-    log("SetHue", "New HSV Color is: ${HSV}", 3)
-    
-    //Now convert it back into HEX
-    RGB = hubitat.helper.ColorUtils.hsvToRGB(HSV)
-    HEX = hubitat.helper.ColorUtils.rgbToHEX(RGB)
-    log ("setHue", "New HEX Color is: ${HEX}", 1)
-    
-	//If a dimmer level is set we will preserve it when changing the color.
-    if ( device.currentValue('level') == 100 ) callTasmota("COLOR", HEX )
-    else callTasmota("COLOR2", HEX )
-}
-
-def setSaturation(float value){
-    log("Action - SetSaturation", "Request Saturation: ${value}", 0)
-    def color = device.currentValue('color')
-    log("SetSaturation", "Current Color is: ${color}", 2)
-    def map = isColor(color)
-    desiredColor = map.Color.substring(0, 6)
-    log("SetSaturation", "Current HEX Color is: #${desiredColor}", 3)
-    
-    //Now convert HEX to RGB
-    RGB = hubitat.helper.ColorUtils.hexToRGB("#${desiredColor}")
-    HSV = hubitat.helper.ColorUtils.rgbToHSV(RGB)
-    HSV[1] = value
-    log("SetSaturation", "New HSV Color is: ${HSV}", 3)
-    
-    //Now convert it back into HEX
-    RGB = hubitat.helper.ColorUtils.hsvToRGB(HSV)
-    HEX = hubitat.helper.ColorUtils.rgbToHEX(RGB)
-    log ("setSaturation", "New HEX Color is: ${HEX}", 1)
-    
-	//If a dimmer level is set we will preserve it when changing the color.
-    if ( device.currentValue('level') == 100 ) callTasmota("COLOR", HEX )
-    else callTasmota("COLOR2", HEX )
-}
-
-//Extracts the corresponding HSV values for a given HEX color and populates the respective attributes
-//Hubitat uses the two built in names of hue and saturation so those are updated for compatibility. Hubitat does not use a built in attribute for "value" for some unknown reason.
-//Because an attribute of name "value" is likely to be confusing I have opted to use an hsv attribute and included all three HSV values into it.
-def setHSVfromColor(valueHex){
-    //Now convert HEX to RGB
-    log("setHSVfromColor", "Color: ${valueHex}", 2)
-    def map = isColor(valueHex)
-    color = map.Color
-    
-    RGB = hubitat.helper.ColorUtils.hexToRGB("#${color}")
-    HSV = hubitat.helper.ColorUtils.rgbToHSV(RGB)
-    
-    log("setHSVfromColor", "Hue is: ${HSV[0]}", 3)
-    sendEvent(name: "hue", value: HSV[0])
-    
-    log("setHSVfromColor", "Saturation is: ${HSV[1]}", 3)
-    sendEvent(name: "saturation", value: HSV[1])
-    
-    log("setHSVfromColor", "value is: ${HSV[2]}", 3)
-    sendEvent(name: "value", value: "${HSV[2]}" )    
-}
-
-//This function is called directly by the Color picker which provides an HSV Color which we must convert to a HEX Color for Tasmota.
-//It also supports HSV for compatibility with other platforms such as SharpTools
-def setColor(value) {
-	def desiredColor
-	log("Action - setColor", "Request Color: ${value}", 0)
-    
-    def valuehex = value?.hex
-    def valuehue = value?.hue
-    def valuesat = value?.saturation
-    def valueDimmer = value?.level
-    
-    //These safeguards are required as Sharptools will send only hue and saturation from their color control.
-    if (valuesat == null) valuesat = 0
-    if (valueDimmer == null) valueDimmer = 100
-    
-    if (valuehex != null){
-    	//We can just treat this as a hex Color
-    	log ("setColor", "Requested Hex Color: ${valuehex}", 2)
-    	def map = isColor(valuehex)
-    	desiredColor = map.Color
-        }
-    
-    if ((valuehex == null) && (valuehue != null) && (valuesat != null)){
-    	//It must be an HSL Color
-        log ("setColor", "Requested HSL - H:${valuehue} S:${valuesat} L:${valueDimmer}", 3)
-        
-        RGBColor = hubitat.helper.ColorUtils.hsvToRGB([valuehue, valuesat, valueDimmer])
-        log ("setColor", "RGBColor is: ${RGBColor}", 3)
-        
-        String HSVColor = hubitat.helper.ColorUtils.rgbToHSV(RGBColor)
-        log ("setColor", "HSVColor is: ${HSVColor}", 3)
-        
-        String HEXColor = hubitat.helper.ColorUtils.rgbToHEX(RGBColor)
-        log ("setColor", "HEXColor is: ${HEXColor}", 2)
-        
-        desiredColor = HEXColor
-        //This is going to appear to Tasmota as a Color change and Tasmota will respond with setting the Dimmer at 100.
-        //This change will be reflected automatically in the Hubitat app but may not be picked up by other integration platforms if that was the source of the Color selection.
-        }
-																			   
-		//If a dimmer level is set we will preserve it when changing the color.
-        if ( device.currentValue('level') == 100 ) callTasmota("COLOR", desiredColor )
-        else callTasmota("COLOR2", desiredColor )
-												 
-    }
-
-//Tests whether a given Color is RGB or W and returns true or false plus the cleaned up Color
-def isColor(ColorIn){
-	String Color = ColorIn.toString()
-    if (Color.substring(0, 1) == "#"){
-        Color = Color.substring(1)
-        }
-    //Add trailing 0's if needed
-    if (Color.length() == 6){
-    	log ("isColor", "Length: 6 - Color:${Color}", 3) 
-        Color = Color + "0000"
-        }
-    else {
-        log ("isColor", "Length: ${Color.length()} - Color:${Color}", 3)
-        }
-        
-    if ( Color.startsWith("000000") == true ){
-    	log ("isColor", "False - ${Color}", 2)
-        return [isColor: false, Color: Color]
-    	}	
-    else {
-    	log ("isColor", "True - ${Color}", 2)
-    	return [isColor: true, Color: Color]
-        }
-}
-//*********************************************************************************************************************************************************************
-//******
-//******  End of Color related functions
-//******
-//*********************************************************************************************************************************************************************
-
-
-
-//*********************************************************************************************************************************************************************
-//******
-//****** STANDARD: Start of Device related functions - These functions are IDENTICAL across all Tasmota Sync drivers where present
-//******
-//*********************************************************************************************************************************************************************
-
-//Allows users to enter customer Tasmota commands without having to go to the Tasmota console.
-void tasmotaCustomCommand(String command, String parameter) {
-    log ("Action - tasmotaCustomCommand", "Issuing custom command '${command} ${parameter}' ", 0)
-    try {
-        callTasmota(command, parameter )
-        }
-    catch (Exception e) { log ("tasmotaCustomCommand", "Error: Invalid request", -1) } 
-    log ("tasmotaCustomCommand", "Exiting", 1)
-}
-
-//Set the reporting period for a Tasmota device. Typically used for sensor data.
-void tasmotaTelePeriod(String seconds) {
-    log ("Action", "Set Tasmota TelePeriod to ${seconds} seconds.", 0)
-    callTasmota("TELEPERIOD", seconds)
-}
-
-//Toggles the device state
-void toggle() {
-    log("Action", "Toggle ", 0)
-    if (device.currentValue("switch") == "on" ) off()
-    else on()
-}
-
-//*********************************************************************************************************************************************************************
-//******
-//****** End of device related functions
-//******
-//*********************************************************************************************************************************************************************
-
 
 
 //*********************************************************************************************************************************************************************
@@ -1411,28 +732,6 @@ private updateDeviceNetworkID() {
      	}
 }
 
-//Tasmota CT is defined in Mireds
-def int miredsToKelvin(int mireds){
-	mireds = mireds.toInteger()
-    if (mireds < 153) mireds = 153
-    if (mireds > 500) mireds = 500
-	def float kelvinfloat = 1000000/mireds
-    def int kelvin = kelvinfloat.toInteger()
-    log("miredsToKelvin", "Converted ${mireds} mireds to ${kelvin} kelvin.", 3)
-	return kelvin
-    }
-
-//Tasmota only recognizes Mireds in a range from 153-500. Values outside that range are ignored.
-def int kelvinToMireds(kelvin){
-	kelvin = kelvin.toInteger()
-    def float miredsfloat = 1000000/kelvin
-    def int mireds = miredsfloat.toInteger()
-    if (mireds < 153) return 153
-    if (mireds > 500) return 500
-    log("miredsToKelvin", "Converted ${kelvin} kelvin to ${mireds} mireds.", 3)
-	return mireds
-    }
-
 //Cleans up Tasmota command URL by substituting for illegal characters
 //Note: There is no way to pass a double quotation mark " 
 def cleanURL(path){
@@ -1469,9 +768,3 @@ def remainingTime(){
 }
 
 
-
-//*********************************************************************************************************************************************************************
-//******
-//****** STANDARD: End of Supporting functions
-//******
-//*********************************************************************************************************************************************************************
