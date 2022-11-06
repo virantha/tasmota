@@ -74,8 +74,6 @@ metadata {
             input name: "HubIP", type: "text", title: bold(dodgerBlue("Hubitat Hub IP Address")), description: italic("The Hubitat Hub Address. Used by Tasmota rules to send HTTP responses."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
             input name: "timeout", type: "number", title: bold("Timeout for Tasmota reponse."), description: italic("Time in ms after which a Transaction is closed by the watchdog and subsequent responses will be ignored. Default 5000ms."), defaultValue: "5000", required:true, displayDuringSetup: false
             input name: "logging_level", type: "number", title: bold("Level of detail displayed in log"), description: italic("Enter log level 0-3. (Default is 0.)"), defaultValue: "0", required:true, displayDuringSetup: false            
-	        input name: "loggingEnhancements", type: "enum", title: bold("Logging Enhancements."), description: italic("Allows log entries for this device to be enhanced with HTML tags for increased increased readability. (Default - All enhancements.)"),
-                options: [ [0:" No enhancements."],[1:" Prepend log events with device name."],[2:" Enable HTML tags on logged events for this device."],[3:" Prepend log events with device name and enable HTML tags." ] ], defaultValue: 3, required:true
             input name: "destPort", type: "text", title: bold("Port"), description: italic("The Tasmota webserver port. Only required if not at the default value of 80."), defaultValue: "80", required:false, displayDuringSetup: true
             input name: "username", type: "text", title: bold("Tasmota Username"), description: italic("Tasmota username is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
           	input name: "password", type: "password", title: bold("Tasmota Password"), description: italic("Tasmota password is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
@@ -192,64 +190,6 @@ def refresh(){
 		log ("Action", "Refresh started....", 0)
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
 		callTasmota("STATUS", "0" )
-}
-
-// Main callback when the Tasmota device does a HTTP request with a status update.  This function
-// is responsible for keeping the device driver status in sync with the actual wall-switch, whether
-// the switch was updated through this driver with a "callTasmota" web request, or whether the wall-switch
-// buttons were physically pushed by a person.
-def syncTasmota(body){
-    log ("syncTasmota", "Data received: ${body}", 0)
-    //This is a special case that only happens when the rules are being injected
-    if (state.ruleInjection == true){
-        log ("syncTasmota", "Rule3 special case complete.", 1)
-        state.ruleInjection = false
-        state.inTransaction = false
-        log ("syncTasmota","Closing Transaction", 2)
-        updateStatus("Complete:Success")
-        return
-    } 
-    log ("syncTasmota", "Tasmota Sync request processing.", 1)
-    state.Action = "Tasmota"
-    state.ActionValue = "Sync"
-    state.lastTasmotaSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-    
-    //Now parse into JSON to extract data.
-    body = parseJson(body)
-    
-    //Preset the values for when the %vars% are empty
-    switch1 = -1 ; dimmer = -1 ; fade = "SAME" ; fadespeed = -1 ; speed = -1 ; fanSwitch = -1;
-    
-    //A value of '' for any of these means no update. Probably because the device has restarted and the %vars% have not repopulated. This is expected.
-    if (body?.SWITCH1 != '') { switch1 = body?.SWITCH1 ; log ("syncTasmota","Switch is: ${switch1}", 2) }
-    if (body?.FANSPEED != '') { fanSpeed = body?.FANSPEED.toInteger() ; log ("syncTasmota","fanSpeed is: ${fanSpeed}", 2) }
-    if (body?.FANSWITCH != '') { fanSwitch = body?.FANSWITCH ; log ("syncTasmota","fanSwitch is: ${fanSwitch}, and fanSpeed is: ${fanSpeed}", 2) }
-    if (body?.DIMMER != '') { dimmer = body?.DIMMER.toInteger() ; log ("syncTasmota","Dimmer is: ${dimmer}", 2) }
-    
-    //Now apply any changes that have been found. In Tasmota, "power" is the switch state unless referring to sensor data.
-    //Only changes will get logged so we can report everything. 
-    if ( switch1.toInteger() == 0 ) sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
-    if ( switch1.toInteger() == 1 ) sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
-    
-    //Send fanSpeed event if we have new data. Ignore anything less than 0.
-    // If fanSwitch is 0 then need to make sure fanSpeed is set to zero (turned off)
-    if ( fanSwitch.toInteger() == 0 && fanSpeed > 0) {
-        log ("syncTasmota", "turning off fan", 2)
-        fanSpeed =-1
-        sendEvent(name: "speed", value: "off", descriptionText: "speed was set to off.")
-    } 
-    if ( fanSpeed >= 0 ) {
-        speed = fanSpeeds.find{ it.value==fanSpeed-1 }?.key
-        log("syncTasmota", "Setting Fan speed ${fanSpeed} = ${speed}", 2)
-        sendEvent(name: "speed", value: speed, descriptionText: "speed was set to ${speed}.")
-    }
-    
-    //Send dimmer events if we have new data. Ignore anything less than 0.
-    if ( dimmer >= 0 ) sendEvent(name: "level", value: dimmer, unit: "Percent" )
-    
-    updateStatus ("Complete:Tasmota Sync")
-    log ("syncTasmota", "Sync completed. Exiting", 1)
-    return
 }
 
 //Updated gets run when the "Initialize" button is clicked or when the device driver is selected
@@ -457,16 +397,12 @@ def callTasmota(action, receivedvalue){
     log ("callTasmota","Exiting", 1)
 }
 
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** STANDARD: parse(). This function handles all communication from Tasmota, both the Hubitat and Tasmota initiated changes. 
-//****** When these changes originate on Hubitat they will be routed to hubitatResponse.
-//****** When the changes originate on Tasmota they will be routed to syncTasmota for hubitatResponse() and statusResponse() for SENSOR data if applicable
-//****** Note: A Hubitat initiated change will cause RULE3 on Tasmota to fire and ALSO send a TSync request. This is expected..... 
-//****** Note: .....if they are received during a transaction (inTransaction==true) then they are ignored as they are just an "echo" of the command sent from Hubitat.
-//******
-//*****************************************************************************************************************************************************************************************************
-
+// Anytime RULE3 fires on the hub (see configure() for RULE3 definition), the
+// device will make a http request back to the hub with the current status of the device
+// which will be handled by this parse function.  It simply dispatches messages with
+// the TSYNC var (so we know it's a request that is generated from RULE3) to the
+// syncTasmota function.  RULE3 will fire in response to BOTH hub-initiated 
+// commands and physical changes at the switch.
 def parse(LanMessage){
     log ("parse", "Entering, data received.", 1)
     log ("parse","data is ${LanMessage}", 3)
@@ -489,8 +425,66 @@ def parse(LanMessage){
     } else { 
         log ("parse", "Not a TSYNC message from the device, so ignoring", 1)
     }
-        
 }
+
+// Main callback handler when the Tasmota device does a HTTP request with a status update.  This function
+// is responsible for keeping the device driver status in sync with the actual wall-switch, whether
+// the switch was updated through this driver with a "callTasmota" web request, or whether the wall-switch
+// buttons were physically pushed by a person.
+def syncTasmota(body){
+    log ("syncTasmota", "Data received: ${body}", 0)
+    //This is a special case that only happens when the rules are being injected
+    if (state.ruleInjection == true){
+        log ("syncTasmota", "Rule3 special case complete.", 1)
+        state.ruleInjection = false
+        state.inTransaction = false
+        log ("syncTasmota","Closing Transaction", 2)
+        updateStatus("Complete:Success")
+        return
+    } 
+    log ("syncTasmota", "Tasmota Sync request processing.", 1)
+    state.Action = "Tasmota"
+    state.ActionValue = "Sync"
+    state.lastTasmotaSync = new Date().format('yyyy-MM-dd HH:mm:ss')
+    
+    //Now parse into JSON to extract data.
+    body = parseJson(body)
+    
+    //Preset the values for when the %vars% are empty
+    switch1 = -1 ; dimmer = -1 ; fade = "SAME" ; fadespeed = -1 ; speed = -1 ; fanSwitch = -1;
+    
+    //A value of '' for any of these means no update. Probably because the device has restarted and the %vars% have not repopulated. This is expected.
+    if (body?.SWITCH1 != '') { switch1 = body?.SWITCH1 ; log ("syncTasmota","Switch is: ${switch1}", 2) }
+    if (body?.FANSPEED != '') { fanSpeed = body?.FANSPEED.toInteger() ; log ("syncTasmota","fanSpeed is: ${fanSpeed}", 2) }
+    if (body?.FANSWITCH != '') { fanSwitch = body?.FANSWITCH ; log ("syncTasmota","fanSwitch is: ${fanSwitch}, and fanSpeed is: ${fanSpeed}", 2) }
+    if (body?.DIMMER != '') { dimmer = body?.DIMMER.toInteger() ; log ("syncTasmota","Dimmer is: ${dimmer}", 2) }
+    
+    //Now apply any changes that have been found. In Tasmota, "power" is the switch state unless referring to sensor data.
+    //Only changes will get logged so we can report everything. 
+    if ( switch1.toInteger() == 0 ) sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
+    if ( switch1.toInteger() == 1 ) sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
+    
+    //Send fanSpeed event if we have new data. Ignore anything less than 0.
+    // If fanSwitch is 0 then need to make sure fanSpeed is set to zero (turned off)
+    if ( fanSwitch.toInteger() == 0 && fanSpeed > 0) {
+        log ("syncTasmota", "Fan turned off", 2)
+        fanSpeed =-1
+        sendEvent(name: "speed", value: "off", descriptionText: "speed was set to off.")
+    } 
+    if ( fanSpeed >= 0 ) {
+        speed = fanSpeeds.find{ it.value==fanSpeed-1 }?.key
+        log("syncTasmota", "Fan speed set to ${fanSpeed} = ${speed}", 2)
+        sendEvent(name: "speed", value: speed, descriptionText: "speed was set to ${speed}.")
+    }
+    
+    //Send dimmer events if we have new data. Ignore anything less than 0.
+    if ( dimmer >= 0 ) sendEvent(name: "level", value: dimmer, unit: "Percent" )
+    
+    updateStatus ("Complete:Tasmota Sync")
+    log ("syncTasmota", "Sync completed. Exiting", 1)
+    return
+}
+
 
 // Helper function to send event message and log them.
 def updateStatus(status){
@@ -500,8 +494,8 @@ def updateStatus(status){
 
 private log(name, message, int loglevel){
 
-    deviceName = bold(blue(device.displayName))
-    msg = "${deviceName}:${dodgerBlue(name)} ${goldenrod(message)}"
+    def deviceName = bold(blue(device.displayName))
+    def msg = "${deviceName}:${dodgerBlue(name)} ${goldenrod(message)}"
 
     //This is a quick way to filter out messages based on loglevel
 	int threshold = settings.logging_level
