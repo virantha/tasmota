@@ -33,6 +33,7 @@ to have been written for Sonoff fans, and needed to be simplified and changed fo
 *  the Free Software Foundation.
 *
 *
+* Copyright 2022 Virantha N. Ekanayake
 **/
 
 import groovy.transform.Field
@@ -65,7 +66,7 @@ metadata {
         command "dimmer"
         command "initialize"
         command "toggle"
-        command "setSpeed", [[name:"speed*", type: "ENUM", description: "speed", constraints: ["off","low", "medium-low", "medium", "high"] ] ]
+        command "setSpeed", [[name:"speed*", type: "ENUM", description: "speed", constraints: fanSpeeds.keySet() as String[] ] ]
 
 	}
     section("Configure the Inputs"){
@@ -82,22 +83,19 @@ metadata {
 }
 
 
-//Turns the Power on
-//Note: POWER and POWER1 are synonymous in Tasmota when issuing commands however STATE only returns "POWER"
+//Turns the light on
 def on() {
     log("Action", "Turn on switch", 0)
     callTasmota("POWER2", "on")
-    //sendEvent(name: "switch", value: "on", descriptionText: "The switch was turned on.")
     }
         
-//Turns the switch off
+//Turns the light off
 def off() {
 	log("Action", "Turn off switch", 0)
     callTasmota("POWER2", "off")
-    //sendEvent(name: "switch", value: "off", descriptionText: "The switch was turned off.")
 }
 
-//Toggles the device state
+//Toggles the light state
 void toggle() {
     log("Action", "Toggle ", 0)
     if (device.currentValue("switch") == "on" ) off()
@@ -136,15 +134,13 @@ def setLevel(Dimmer, duration) {
 	callTasmota("BACKLOG", command)
 }
 
-
 //Turns the fan off.
 def fanOff() {
     log("Action", "Turn fan off", 0)
     sendTuyaSpeed("off")
 }
 
-//Sets the fan to the Tasmota FANSPEED corresponding to the predetermined english names within the setSpeed() tile.
-//This is a function name expected to be present when the FanControl capability is enabled.
+// Set the fan speed
 def setSpeed(String speed) {
     log("Action", "setSpeed: Requested speed is: ${speed}", 0)
     sendTuyaSpeed(speed)
@@ -153,21 +149,18 @@ def setSpeed(String speed) {
 //Cycles the fan to the next position in the cycle Off, Low, Medium, High, Off.
 //This is a function name expected to be present when the FanControl capability is enabled.
 void cycleSpeed(){
-    speeds = fanSpeeds.keySet() as String[]
+    speeds = fanSpeeds.keySet() as String[] // list of available speeds
 
-    log("cycleSpeed", speeds, 2)
+    // Find current speed index in list of speeds
     currSpeed = device.currentValue("speed")
-    currSpeedIndex = speeds.findIndexOf { name -> name == currSpeed}
-
+    currSpeedIndex = speeds.findIndexOf { name -> name == currSpeed}  
     log("cycleSpeed", "found currSpeed ${currSpeed}, ${currSpeedIndex}", 2)
     
-    // Now, go to the next index and return that speed
+    // Now, go to the next index and set that speed
     newSpeedIndex = (currSpeedIndex + 1) % speeds.size()
     log("cycleSpeed", "found newSpeedIndex ${newSpeedIndex}", 2)
     newSpeed = speeds[newSpeedIndex]
-    log("Action", "Requesting new speed ${newSpeed}", 0)
-    sendTuyaSpeed(newSpeed)
-    return
+    setSpeed(newSpeed)
 }
 
 /* Main function to translate Hubitat fan levels (off, low, medium, etc) into
@@ -176,18 +169,13 @@ void cycleSpeed(){
 */
 def sendTuyaSpeed(String speed) {
   
-    def currSpeed = device.currentValue("fanSpeed")
-    def newSpeed = currSpeed
-    
-    newSpeed = fanSpeeds[speed]
-
-    if (newSpeed >= 0) {
-        tuyaSendFanSpeed(newSpeed)
-    } else if (newSpeed==-1){
+    if (speed == 'off') {
         // Turn off fan
         tuyaSendFanOff()
     } else {
-        log("sendTuyaSpeed", "Unknown speed ${newSpeed}", 0)
+        // Convert speed string to a Tuya fan speed int
+        newSpeed = fanSpeeds[speed]
+        tuyaSendFanSpeed(newSpeed)
     }
 }
 
@@ -199,12 +187,10 @@ private void tuyaSendFanSpeed(fanspeed) {
     callTasmota("TUYASEND4", "3,${fanspeed}")
 }
 
-
 //Sync the UI to the actual status of the device manually. The results come back to the parse function.
 def refresh(){
 		log ("Action", "Refresh started....", 0)
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-		//callTasmota("STATE", "" )
 		callTasmota("STATUS", "0" )
 }
 
@@ -262,7 +248,7 @@ def syncTasmota(body){
     if ( dimmer >= 0 ) sendEvent(name: "level", value: dimmer, unit: "Percent" )
     
     updateStatus ("Complete:Tasmota Sync")
-    log ("syncTasmota", "Sync completed. Exiting", 0)
+    log ("syncTasmota", "Sync completed. Exiting", 1)
     return
 }
 
@@ -359,7 +345,7 @@ def installed(){
 def updated(){
 	log ("Update", "Settings: ${settings}", 0)
 	initialize()
-	log ("configureTasmota", "Now setting dimmer range", 0)
+	log ("updated", "Setting devicename in Tasmota web-ui to ${device.displayName}", 0)
     callTasmota("DeviceName", device.displayName)
 }
 
@@ -400,7 +386,8 @@ def watchdog(){
 
 def lanSent(hubitat.device.HubResponse hubResponse) {
     // This is called back when callTasmota lanmessage is sent out
-    // Can use this as verification as command sent, but we need to wait for syncTasmota to update status of device
+    // Can use this as verification as command sent, but at some point the device itself will do a callback
+    // that will get dispatched to syncTasmota to update status of device inside hubitat
     def status = hubResponse.status
     def json = hubResponse.json
 
@@ -495,21 +482,12 @@ def parse(LanMessage){
 	//Convert all the contents to upper case for consistency
 	body = body?.toUpperCase()
 
-	//Search body for the word STATUS while it is still in string form
-	StatusSync = false
-	if (body.contains("STATUS")==true ) StatusSync = true
-	log ("parse","StatusSync is: ${StatusSync}.", 2)
-
 	//Search body for the word TSYNC while it is still in string form
-	TSync = false
-	if (body.contains("TSYNC")==true ) TSync = true
-	log ("parse","TSync is: ${TSync}.", 2)
-
-	//If the TSync flag is true then this is a message generated by the Tasmota rules and we should send the response to syncTasmota function.
-	if (TSync == true) {
+	if (body.contains("TSYNC")==true ) {
 		log ("parse","Exit to syncTasmota()", 1)
 		syncTasmota(body)
-		return
+    } else { 
+        log ("parse", "Not a TSYNC message from the device, so ignoring", 1)
     }
         
 }
@@ -520,111 +498,22 @@ def updateStatus(status){
     sendEvent(name: "Status", value: status )
 }
 
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** STANDARD: Start of log()
-//****** Function to selectively log activity based on various logging levels. Normal runtime configuration is threshold = 0
-//****** Loglevels are cumulative: -1 All errors, 0 = Action and results, 1 = Entering\Exiting modules with parameters, 2 = Key variables, 3 = Extended debugging info
-//******
-//*****************************************************************************************************************************************************************************************************
-
 private log(name, message, int loglevel){
-	
+
+    deviceName = bold(blue(device.displayName))
+    msg = "${deviceName}:${dodgerBlue(name)} ${goldenrod(message)}"
+
     //This is a quick way to filter out messages based on loglevel
 	int threshold = settings.logging_level
     if (loglevel > threshold) {return}
-    def indent = ""
-    def icon1 = ""
-    def icon2 = ""
-    def icon3 = ""
-    
-    if (loglevel == -1) {
-        icon1 = "🛑 "    //This is reserved for gross errors
-        indent = ""
-        }
-    
-    if (loglevel == 0) { 
-        icon1 = "0️⃣"    //Used for normal operations, on, off, Color change etc
-        indent = ""
-        }
-    
-    if (loglevel == 1) {
-        icon1 = "*️⃣1️⃣"    //Adds entering\exiting functions with basic parameters
-        indent = ".."
-    }
-    if (loglevel == 2) {
-        icon1 = "*️⃣*️⃣2️⃣"    //Adds display of additional data points
-        indent = "...."
-    }
-    
-    if (loglevel == 3) { 
-        icon1 = "*️⃣*️⃣*️⃣3️⃣"    //Used for diagnostic logging. Everything else that was not previously covered.
-        indent = "......"
-    }
-     
-    //These will be the default icons for the primary functions. Others that may be useful in future ☎️ 📜 👎 👍 🔂 🎬 ⚰️ 🚪 💣
-    if (name.toString().toUpperCase().contains("CALLTASMOTA")==true ) icon2 = "📞 "
-    if (name.toString().toUpperCase().contains("ACTION")==true ) icon2 = "⚡ "
-    if (name.toString().toUpperCase().contains("DELETE")==true ) icon2 = "🗑️ "
-    if (name.toString().toUpperCase().contains("SAVE")==true ) icon2 = "💾 "
-    if (name.toString().toUpperCase().contains("WATCHDOG")==true ) icon2 = "🐶 "
-    
-    //These will ovverride the secondary icons Keyword search and icon replacement. Obviously icon2 may get overwritten so order is important.
-    if (message.toString().toUpperCase().contains("APPLIED SUCCESSFULLY")==true ) icon2 = "⭐ "
-    if (message.toString().toUpperCase().contains("FAILED TO APPLY")==true ) icon2 = "💩 "
-    if (message.toString().toUpperCase().contains("WARNING")==true ) icon2 = "🚩 "
-    
-    if (message.toString().toUpperCase().contains("ENTER")==true ) icon2 = "🏁 "
-    if (message.toString().toUpperCase().contains("FINISH")==true ) icon3 = "🛑 "
-    if (name.toString().toUpperCase().contains("SYNC")==true ) icon2 = "🔄 "
-    if (message.toString().toUpperCase().contains("EXIT")==true ) icon2 = "💨 "
-    if (message.toString().toUpperCase().contains("<CRLF>")==true ) { message = message.replace("<CRLF>","\n🔷 ") }
-    if ( (name.toString().toUpperCase().contains("ACTION")==true ) && (message.toString().toUpperCase().contains("COLOR")==true ) ) icon3 = "🎨"
 
-    displayName = ""
-    newMessage = message
-    
-    //log.info ("settings.loggingEnhancements: " + settings.loggingEnhancements )
-    
-    switch(settings.loggingEnhancements) { 
-        case "0": 
-             break
-        case "1": 
-            displayName = device.displayName + " - "
-            break
-        case "2": 
-            break
-        case "3":
-            displayName = blue(device.displayName) + " - "
-        }
-   
-    //For logging enhancements (2 & 3) then we make the newMessage formatted with HTML colors. 0 & 1 have no HTML
-    if ( settings.loggingEnhancements == "2" || settings.loggingEnhancements == "3") {
-        if ( loglevel <= 0 ) {
-            //If the logging level is 0 then we do not need to highlight the display as much as we are not trying to make it stand out against anything.
-            if ( settings.logging_level == 0 ) newMessage = name + ": " + green(message)
-            else newMessage = bold(name) + ": " + green(bold(message))
-        }
-        if ( loglevel == 1 ) newMessage = black(name) + ": " + green(message)
-        if ( loglevel == 2 ) newMessage = goldenrod(name) + ": " + goldenrod(message)
-        if ( loglevel >= 3 ) newMessage = midnightBlue(name) + ": " + midnightBlue(message)
-       }
-    
-    if ( loglevel <= 1 ) { log.info ( displayName + icon1 + icon2 + icon3 + indent + newMessage)  }
-    if ( loglevel >= 2 ) { log.debug ( displayName + icon1 + icon2 + icon3 + indent + newMessage) }
+    if (loglevel <= 0) {
+        log.info(msg)
+    } else {
+        log.debug(msg)
+    }
+
 }
-
-//*********************************************************************************************************************************************************************
-//****** End of log function
-//*********************************************************************************************************************************************************************
-
-
-
-//*****************************************************************************************************************************************************************************************************
-//******
-//****** Start of HTML enhancement functions. Primarily used for logging with a few uses in settings. Most of these are unused but easier to just keep everything.
-//******
-//*****************************************************************************************************************************************************************************************************
 
 //Functions to enhance text appearance
 String bold(s) { return "<b>$s</b>" }
@@ -634,57 +523,13 @@ String underline(s) { return "<u>$s</u>" }
 //String tomato(s) { return '"<p style="background-color:Tomato;">' + s + '</p>' }
 //String test(s) { return '<body text = "#00FFFF" bgcolor = "#808000">' + s + '</body>'}
 
-//Reds
-String indianRed(s) { return '<font color = "IndianRed">' + s + '</font>'}
-String lightCoral(s) { return '<font color = "LightCoral">' + s + '</font>'}
-String crimson(s) { return '<font color = "Crimson">' + s + '</font>'}
-String red(s) { return '<font color = "Red">' + s + '</font>'}
-String fireBrick(s) { return '<font color = "FireBrick">' + s + '</font>'}
-String coral(s) { return '<font color = "Coral">' + s + '</font>'}
-//Oranges
-String orangeRed(s) { return '<font color = "OrangeRed">' + s + '</font>'}
-String darkOrange(s) { return '<font color = "DarkOrange">' + s + '</font>'}
-String orange(s) { return '<font color = "Orange">' + s + '</font>'}
-//Yellows
-String gold(s) { return '<font color = "Gold">' + s + '</font>'}
-String yellow(s) { return '<font color = "yellow">' + s + '</font>'}
-String paleGoldenRod(s) { return '<font color = "PaleGoldenRod">' + s + '</font>'}
-String peachPuff(s) { return '<font color = "PeachPuff">' + s + '</font>'}
-String darkKhaki(s) { return '<font color = "DarkKhaki">' + s + '</font>'}
-//Purples
-String magenta(s) { return '<font color = "Magenta">' + s + '</font>'}
-String rebeccaPurple(s) { return '<font color = "RebeccaPurple">' + s + '</font>'}
-String blueViolet(s) { return '<font color = "BlueViolet">' + s + '</font>'}
-String slateBlue(s) { return '<font color = "SlateBlue">' + s + '</font>'}
-String darkSlateBlue(s) { return '<font color = "DarkSlateBlue">' + s + '</font>'}
-//Greens
-String limeGreen(s) { return '<font color = "LimeGreen">' + s + '</font>'}
 String green(s) { return '<font color = "green">' + s + '</font>'}
-String darkGreen(s) { return '<font color = "DarkGreen">' + s + '</font>'}
-String olive(s) { return '<font color = "Olive">' + s + '</font>'}
-String darkOliveGreen(s) { return '<font color = "DarkOliveGreen">' + s + '</font>'}
-String lightSeaGreen(s) { return '<font color = "LightSeaGreen">' + s + '</font>'}
-String darkCyan(s) { return '<font color = "DarkCyan">' + s + '</font>'}
-String teal(s) { return '<font color = "Teal">' + s + '</font>'}
 //Blues
-String cyan(s) { return '<font color = "Cyan">' + s + '</font>'}
-String lightSteelBlue(s) { return '<font color = "LightSteelBlue">' + s + '</font>'}
-String steelBlue(s) { return '<font color = "SteelBlue">' + s + '</font>'}
-String lightSkyBlue(s) { return '<font color = "LightSkyBlue">' + s + '</font>'}
-String deepSkyBlue(s) { return '<font color = "DeepSkyBlue">' + s + '</font>'}
 String dodgerBlue(s) { return '<font color = "DodgerBlue">' + s + '</font>'}
 String blue(s) { return '<font color = "blue">' + s + '</font>'}
-String midnightBlue(s) { return '<font color = "midnightBlue">' + s + '</font>'}
 //Browns
-String burlywood(s) { return '<font color = "Burlywood">' + s + '</font>'}
 String goldenrod(s) { return '<font color = "Goldenrod">' + s + '</font>'}
-String darkGoldenrod(s) { return '<font color = "DarkGoldenrod">' + s + '</font>'}
-String sienna(s) { return '<font color = "Sienna">' + s + '</font>'}
 //Grays
-String lightGray(s) { return '<font color = "LightGray">' + s + '</font>'}
-String gray(s) { return '<font color = "Gray">' + s + '</font>'}
-String dimGray(s) { return '<font color = "DimGray">' + s + '</font>'}
-String slateGray(s) { return '<font color = "SlateGray">' + s + '</font>'}
 String black(s) { return '<font color = "Black">' + s + '</font>'}
 
 
@@ -705,11 +550,6 @@ return s
 private String convertIPtoHex(ipAddress) { 
     String hex = ipAddress.tokenize( '.' ).collect {  String.format( '%02X', it.toInteger() ) }.join()
     return hex
-}
-
-private String convertPortToHex(port) {
-	String hexport = port.toString().format( '%04X', port.toInteger() )
-    return hexport
 }
 
 //Updates the device network information - Allows user to force an update of the device network information if required.
