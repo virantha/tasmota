@@ -38,6 +38,7 @@ to have been written for Sonoff fans, and needed to be simplified and changed fo
 
 import groovy.transform.Field
 import groovy.json.JsonSlurper
+
 @Field static final Map fanSpeeds = [
     "off": -1,
     "low": 0,
@@ -47,7 +48,7 @@ import groovy.json.JsonSlurper
 ]
 
 metadata {
-		definition (name: "Tasmota Fan with Dimmer for Tuya switch", namespace: "virantha", author: "Virantha Ekanayake", importUrl: "https://raw.githubusercontent.com/virantha/tasmota/main/tasmota_fan_light.groovy", singleThreaded: true )  {
+    definition (name: "Tasmota Fan with Dimmer for Tuya switch", namespace: "virantha", author: "Virantha Ekanayake", importUrl: "https://raw.githubusercontent.com/virantha/tasmota/main/tasmota_fan_light.groovy", singleThreaded: true )  {
         capability "Switch" 
         capability "SwitchLevel"        
         capability "FanControl"
@@ -58,7 +59,7 @@ metadata {
         attribute "level", "number"    // Dimmer level
         attribute "speed", "string"    // Fan speed
         
-		// Driver status message 
+        // Driver status message 
         attribute "Status", "string"  
             
         command "fanOff"
@@ -68,16 +69,16 @@ metadata {
         command "toggle"
         command "setSpeed", [[name:"speed*", type: "ENUM", description: "speed", constraints: fanSpeeds.keySet() as String[] ] ]
 
-	}
+    }
     section("Configure the Inputs"){
-			input name: "destIP", type: "text", title: bold(dodgerBlue("Tasmota Device IP Address")), description: italic("The IP address of the Tasmota device."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
-            input name: "HubIP", type: "text", title: bold(dodgerBlue("Hubitat Hub IP Address")), description: italic("The Hubitat Hub Address. Used by Tasmota rules to send HTTP responses."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
-            input name: "timeout", type: "number", title: bold("Timeout for Tasmota reponse."), description: italic("Time in ms after which a Transaction is closed by the watchdog and subsequent responses will be ignored. Default 5000ms."), defaultValue: "5000", required:true, displayDuringSetup: false
-            input name: "logging_level", type: "number", title: bold("Level of detail displayed in log"), description: italic("Enter log level 0-3. (Default is 0.)"), defaultValue: "0", required:true, displayDuringSetup: false            
-            input name: "destPort", type: "text", title: bold("Port"), description: italic("The Tasmota webserver port. Only required if not at the default value of 80."), defaultValue: "80", required:false, displayDuringSetup: true
-            input name: "username", type: "text", title: bold("Tasmota Username"), description: italic("Tasmota username is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
-          	input name: "password", type: "password", title: bold("Tasmota Password"), description: italic("Tasmota password is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
-        }  
+        input name: "destIP", type: "text", title: bold(dodgerBlue("Tasmota Device IP Address")), description: italic("The IP address of the Tasmota device."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
+        input name: "HubIP", type: "text", title: bold(dodgerBlue("Hubitat Hub IP Address")), description: italic("The Hubitat Hub Address. Used by Tasmota rules to send HTTP responses."), defaultValue: "192.168.0.X", required:true, displayDuringSetup: true
+        input name: "timeout", type: "number", title: bold("Timeout for Tasmota reponse."), description: italic("Time in ms after which a Transaction is closed by the watchdog and subsequent responses will be ignored. Default 5000ms."), defaultValue: "5000", required:true, displayDuringSetup: false
+        input name: "logging_level", type: "number", title: bold("Level of detail displayed in log"), description: italic("Enter log level 0-3. (Default is 0.)"), defaultValue: "0", required:true, displayDuringSetup: false            
+        input name: "destPort", type: "text", title: bold("Port"), description: italic("The Tasmota webserver port. Only required if not at the default value of 80."), defaultValue: "80", required:false, displayDuringSetup: true
+        input name: "username", type: "text", title: bold("Tasmota Username"), description: italic("Tasmota username is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
+        input name: "password", type: "password", title: bold("Tasmota Password"), description: italic("Tasmota password is required if configured on the Tasmota device."), required: false, displayDuringSetup: true
+    }  
 }
 
 
@@ -85,11 +86,11 @@ metadata {
 def on() {
     log("Action", "Turn on switch", 0)
     callTasmota("POWER2", "on")
-    }
+}
         
 //Turns the light off
 def off() {
-	log("Action", "Turn off switch", 0)
+    log("Action", "Turn off switch", 0)
     callTasmota("POWER2", "off")
 }
 
@@ -102,8 +103,8 @@ void toggle() {
 
 //Dimmer control for only Dimmer value.
 def setLevel(Dimmer) {
-	log ("Action - setLevel1", "Request Dimmer: ${Dimmer}%", 0)
-	callTasmota("Dimmer", Dimmer)
+    log ("Action - setLevel1", "Request Dimmer: ${Dimmer}%", 0)
+    callTasmota("Dimmer", Dimmer)
 }
 
 //This Brighter function increments the brightness of the dimmer setting.
@@ -127,9 +128,9 @@ def setLevel(Dimmer, duration) {
     if (duration > 40) duration = 40
     if (duration > 0 ) duration = Math.round(duration * 2)    //Tasmota uses 0.5 second increments so double it for Tasmota Speed value
     delay = duration * 10 + 5    //Delay is in 1/10 of a second so we make it slightly longer than the actual fade delay.
-	log ("Action - setLevel2", "Request Dimmer: ${Dimmer}% ;  SPEED2: ${duration}", 0)
+    log ("Action - setLevel2", "Request Dimmer: ${Dimmer}% ;  SPEED2: ${duration}", 0)
     command = "Rule3 OFF ; Dimmer ${Dimmer} ; SPEED2 ${duration} ; DELAY ${delay} ; Rule3 ON"
-	callTasmota("BACKLOG", command)
+    callTasmota("BACKLOG", command)
 }
 
 //Turns the fan off.
@@ -187,18 +188,18 @@ private void tuyaSendFanSpeed(fanspeed) {
 
 //Sync the UI to the actual status of the device manually. The results come back to the parse function.
 def refresh(){
-		log ("Action", "Refresh started....", 0)
+        log ("Action", "Refresh started....", 0)
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-		callTasmota("STATUS", "0" )
+        callTasmota("STATUS", "0" )
 }
 
 //Updated gets run when the "Initialize" button is clicked or when the device driver is selected
 def initialize(){
-	log("Initialize", "Device initialized", 0)
-	//Make sure we are using the right address
+    log("Initialize", "Device initialized", 0)
+    //Make sure we are using the right address
     updateDeviceNetworkID()
     
-   	//To be safe these are populated with initial values to prevent a null return if they are used as logic flags
+       //To be safe these are populated with initial values to prevent a null return if they are used as logic flags
     if ( state.Action == null ) state.Action = "None"
     if ( state.ActionValue == null ) state.ActionValue = "None"
     if ( device.currentValue("Status") == null ) updateStatus("Complete")   
@@ -243,30 +244,30 @@ def configure(){
 // I have not tested this function extensively
 def configureTasmota() {
     // First, make sure baud rate is set to 115200 and all capabilities are enabled
-	//log ("configureTasmota", "Now enabling fan/dimmer functions", 0)
+    //log ("configureTasmota", "Now enabling fan/dimmer functions", 0)
     //callTasmota("BACKLOG", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
     //pauseExecution(2000)
     callTasmota("module", "54")
     pauseExecution(1000)
-	log ("configureTasmota", "Waiting for baud rate ... 1 sec", 0)
+    log ("configureTasmota", "Waiting for baud rate ... 1 sec", 0)
     callTasmota("SetOption97", "1")
     pauseExecution(2000)
 
-	log ("configureTasmota", "Waiting for dimmer/fan functions.. ", 0)
+    log ("configureTasmota", "Waiting for dimmer/fan functions.. ", 0)
     callTasmota("BACKLOG0", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
-	log ("configureTasmota", "Waiting for reboot", 0)
+    log ("configureTasmota", "Waiting for reboot", 0)
     pauseExecution(5000)
     waitUntilPing()
     //callTasmota("TuyaMCU", "11,1")
     //callTasmota("TuyaMCU", "21,10")
     //callTasmota("TuyaMCU", "12,9")
-	log ("configureTasmota", "resending for dimmer/fan functions.. 10 sec", 0)
+    log ("configureTasmota", "resending for dimmer/fan functions.. 10 sec", 0)
     callTasmota("BACKLOG0", "TuyaMCU 11,1; TuyaMCU 21,10; TuyaMCU 12,9")
-	log ("configureTasmota", "Waiting for reboot", 0)
+    log ("configureTasmota", "Waiting for reboot", 0)
     pauseExecution(5000)
     waitUntilPing()
 
-	log ("configureTasmota", "Waiting for options .. 10 sec", 0)
+    log ("configureTasmota", "Waiting for options .. 10 sec", 0)
     callTasmota("BACKLOG", "setoption20 0; setoption54 1; webbutton1 Fan; webbutton2 Light; DimmerRange 100,1000; ledtable 0")
     pauseExecution(3000)
     waitUntilPing()
@@ -278,20 +279,20 @@ def configureTasmota() {
 
 //Installed gets run when the device driver is selected and saved
 def installed(){
-	log ("Installed", "Installed with settings: ${settings}", 0)
+    log ("Installed", "Installed with settings: ${settings}", 0)
 }
 
 //Updated gets run when the "Save Preferences" button is clicked
 def updated(){
-	log ("Update", "Settings: ${settings}", 0)
-	initialize()
-	log ("updated", "Setting devicename in Tasmota web-ui to ${device.displayName}", 0)
+    log ("Update", "Settings: ${settings}", 0)
+    initialize()
+    log ("updated", "Setting devicename in Tasmota web-ui to ${device.displayName}", 0)
     callTasmota("DeviceName", device.displayName)
 }
 
 //Uninstalled gets run when called from a parent app???
 def uninstalled() {
-	log ("Uninstall", "Device uninstalled", 0)
+    log ("Uninstall", "Device uninstalled", 0)
 }
 
 // Handle command timeouts (not sure why we can't just do this in callTasmota?)
@@ -300,14 +301,13 @@ def uninstalled() {
 def watchdog(){
     if (state.inTransaction == false ) {
         log ("watchdog", "All normal. Not in a transaction.", 2)
-        }
-    else
-        {
+    }
+    else {
         log ("watchdog", "Transaction timed out. Cancelled.", 2)
         updateStatus("Complete:Timeout") 
         //If the transaction has not finished successfully then we should mark it complete now the timeout has expired.   
         state.inTransaction = false
-        }
+    }
     
     state.remove("ruleInjection")
     log ("watchdog", "Finished.", 1)
@@ -321,8 +321,8 @@ def watchdog(){
         runInMillis(remainingTime() + 500, "refresh", [data:[]])
 
         state.LastSync = new Date().format('yyyy-MM-dd HH:mm:ss')
-        }
     }
+}
 
 def lanSent(hubitat.device.HubResponse hubResponse) {
     // This is called back when callTasmota lanmessage is sent out
@@ -352,7 +352,7 @@ def lanSent(hubitat.device.HubResponse hubResponse) {
 
 // Send a command to the wall-swich
 def callTasmota(action, receivedvalue){
-	log ("callTasmota", "Sending command: ${action} ${receivedvalue}", 0)
+    log ("callTasmota", "Sending command: ${action} ${receivedvalue}", 0)
     //Update the status to show that we are sending info to the device
     
     def actionValue = receivedvalue.toString()
@@ -360,7 +360,7 @@ def callTasmota(action, receivedvalue){
     state.Action = action
     state.ActionValue = actionValue
     
-	//Capture what we are doing so we can validate whether it executed successfully or not
+    //Capture what we are doing so we can validate whether it executed successfully or not
     //We are essentially using the Attribute "Action" as a container for global variables.
     state.startTime = now()
     log ("callTasmota","Opening Transaction", 2)
@@ -413,15 +413,15 @@ def parse(LanMessage){
     state.lastMessage = state.thisMessage
     state.thisMessage = msg.body       
         
-	//TSync message use single quotes and must be cleaned up to be handled as JSON later
-	body = body?.replace("'","\"") 
-	//Convert all the contents to upper case for consistency
-	body = body?.toUpperCase()
+    //TSync message use single quotes and must be cleaned up to be handled as JSON later
+    body = body?.replace("'","\"") 
+    //Convert all the contents to upper case for consistency
+    body = body?.toUpperCase()
 
-	//Search body for the word TSYNC while it is still in string form
-	if (body.contains("TSYNC")==true ) {
-		log ("parse","Exit to syncTasmota()", 1)
-		syncTasmota(body)
+    //Search body for the word TSYNC while it is still in string form
+    if (body.contains("TSYNC")==true ) {
+        log ("parse","Exit to syncTasmota()", 1)
+        syncTasmota(body)
     } else { 
         log ("parse", "Not a TSYNC message from the device, so ignoring", 1)
     }
@@ -487,18 +487,18 @@ def syncTasmota(body){
 
 
 // Helper function to send event message and log them.
-def updateStatus(status){
+def updateStatus(status) {
     log ("updateStatus", status, 1)
     sendEvent(name: "Status", value: status )
 }
 
-private log(name, message, int loglevel){
+private log(name, message, int loglevel) {
 
     def deviceName = bold(blue(device.displayName))
     def msg = "${deviceName}:${dodgerBlue(name)} ${goldenrod(message)}"
 
     //This is a quick way to filter out messages based on loglevel
-	int threshold = settings.logging_level
+    int threshold = settings.logging_level
     if (loglevel > threshold) {return}
 
     if (loglevel <= 0) {
@@ -548,27 +548,27 @@ private String convertIPtoHex(ipAddress) {
 
 //Updates the device network information - Allows user to force an update of the device network information if required.
 private updateDeviceNetworkID() {
-	
+    
     try{
-    	log("updateDeviceNetworkID", "Settings are:" + settings.destIP, 3)
+        log("updateDeviceNetworkID", "Settings are:" + settings.destIP, 3)
         def hosthex = convertIPtoHex(settings.destIP)
-    	def desireddni = "$hosthex"
+        def desireddni = "$hosthex"
         
         def actualdni = device.deviceNetworkId
         
         //If they don't match then we need to update the DNI
         if (desireddni !=  actualdni){
-        	device.deviceNetworkId = "$hosthex" 
+            device.deviceNetworkId = "$hosthex" 
             log("Action", "Save updated DNI: ${"$hosthex"}", 0)
-         	}
+             }
         else
-        	{
+            {
             log("Action", "DNI: ${"$hosthex"} is correct. Not updated. ", 2)
             }
         }
     catch (e){
-    	log("Save", "Error updating Device Network ID: ${e}", -1)
-     	}
+        log("Save", "Error updating Device Network ID: ${e}", -1)
+         }
 }
 
 // Waits until at least 5 pings are successful
@@ -603,7 +603,7 @@ def cleanURL(path){
     path = path?.replace("}","%7D") 
     log ("cleanURL", "Returning fixed path: ${path}", 3)
     return path
-    } 
+} 
 
 //Returns the maximum amount of time until a Transaction is guaranteed to be finished.  Used to slow sequential BACKLOG transactions.
 def remainingTime(){
